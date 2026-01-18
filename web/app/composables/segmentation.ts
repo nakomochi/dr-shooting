@@ -28,6 +28,8 @@ export type SegmentationOptions = {
   iou?: number;
   /** Maximum number of masks (default: 20) */
   maxMasks?: number;
+  /** Minimum area as fraction of image (default: 0.01 = 1%) */
+  minArea?: number;
 };
 
 const getDefaultEndpoint = (): string => {
@@ -47,6 +49,7 @@ export const requestSegmentation = async (
     conf = 0.4,
     iou = 0.9,
     maxMasks = 20,
+    minArea = 0.01,
   } = options;
 
   console.log(`[Segmentation] Sending request to ${endpoint}`);
@@ -62,6 +65,7 @@ export const requestSegmentation = async (
         conf,
         iou,
         max_masks: maxMasks,
+        min_area: minArea,
       }),
     });
 

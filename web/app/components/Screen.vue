@@ -16,6 +16,7 @@ import {
   createReticle,
   createShotEffectManager,
   createDestructionEffectManager,
+  createDestructionPlaneManager,
   createScoreDisplay,
   sendShotAndApplyBackground,
   createSegmentationInit,
@@ -80,6 +81,12 @@ onMounted(async () => {
   });
   cleanups.push(destructionEffect.dispose);
 
+  // White plane that appears when mask is destroyed
+  const destructionPlane = createDestructionPlaneManager(three.scene, {
+    scaleMultiplier: 1.1,
+  });
+  cleanups.push(destructionPlane.dispose);
+
   // 3D shot effect (bullet flying from gun to reticle)
   const shotEffect = createShotEffectManager(three.scene, {
     duration: 300,
@@ -93,6 +100,10 @@ onMounted(async () => {
     onHit: (result) => {
       console.log(`[Hit] Mask ${result.maskId} at`, result.position.toArray());
       const overlay = segmentationInit?.getMaskOverlay();
+
+      // Spawn white plane with same shape as destroyed mask
+      destructionPlane.spawn(result.mask);
+
       overlay?.hideMask(result.maskId);
       destructionEffect.spawn(result.position, 0xff6600);
       // Update score

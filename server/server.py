@@ -18,11 +18,12 @@ from datetime import datetime
 
 
 class SegmentRequest(BaseModel):
-    """セグメンテーションリクエストのスキーマ"""
+    """Segmentation request schema"""
     image: str  # Base64 encoded
     conf: float = 0.4
     iou: float = 0.9
     max_masks: int = 20
+    min_area: float = 0.01  # Minimum area as fraction of image (1% default)
 
 
 def generate_distinct_color(index: int) -> list[int]:
@@ -75,7 +76,7 @@ async def segment_image(request: SegmentRequest):
         image_data = base64.b64decode(request.image)
         image = Image.open(BytesIO(image_data))
 
-        print(f"[HTTP] Processing image: {image.size}, conf={request.conf}, iou={request.iou}")
+        print(f"[HTTP] Processing image: {image.size}, conf={request.conf}, iou={request.iou}, min_area={request.min_area}")
 
         # FastSAMで推論
         results = model(
@@ -92,27 +93,52 @@ async def segment_image(request: SegmentRequest):
             masks = results[0].masks.data.cpu().numpy()
             boxes = results[0].boxes.xyxy.cpu().numpy() if results[0].boxes is not None else None
 
-            for i, mask in enumerate(masks[:request.max_masks]):
-                # マスクをバイナリ化
-                binary_mask = (mask > 0.5).astype(np.uint8) * 255
+            # Use mask dimensions for area calculation (FastSAM output size)
+            mask_height, mask_width = masks[0].shape if len(masks) > 0 else (1, 1)
+            total_area = mask_width * mask_height
 
-                # PNGとして圧縮
-                mask_img = Image.fromarray(binary_mask)
+            print(f"[HTTP] Mask array shape: {masks.shape}, total_area={total_area}, min_area threshold={request.min_area}")
+            print(f"[HTTP] Total masks before filtering: {len(masks)}")
+
+            mask_id = 0
+            skipped_count = 0
+            for i, mask in enumerate(masks[:request.max_masks]):
+                # Calculate actual mask area by counting non-zero pixels
+                binary_mask = (mask > 0.5).astype(np.uint8)
+                mask_pixel_count = int(np.sum(binary_mask))
+                mask_area_ratio = mask_pixel_count / total_area
+
+                # Filter out small masks
+                if mask_area_ratio < request.min_area:
+                    print(f"[HTTP] Skipping mask {i}: pixels={mask_pixel_count}, ratio={mask_area_ratio:.4f} < {request.min_area}")
+                    skipped_count += 1
+                    continue
+
+                print(f"[HTTP] Keeping mask {i}: pixels={mask_pixel_count}, ratio={mask_area_ratio:.4f}")
+
+                # Get bounding box (scale to original image size)
+                bbox = boxes[i].tolist() if boxes is not None and i < len(boxes) else None
+
+                # Convert mask to binary image
+                binary_mask_img = binary_mask * 255
+
+                # Compress as PNG
+                mask_img = Image.fromarray(binary_mask_img)
                 buffered = BytesIO()
                 mask_img.save(buffered, format="PNG", optimize=True)
                 mask_base64 = base64.b64encode(buffered.getvalue()).decode()
 
-                # bounding box (存在する場合)
-                bbox = boxes[i].tolist() if boxes is not None and i < len(boxes) else None
-
                 masks_data.append({
-                    "id": i,
+                    "id": mask_id,
                     "data": mask_base64,
                     "width": int(mask.shape[1]),
                     "height": int(mask.shape[0]),
                     "bbox": bbox,
-                    "color": generate_distinct_color(i),
+                    "color": generate_distinct_color(mask_id),
                 })
+                mask_id += 1
+
+            print(f"[HTTP] Skipped {skipped_count} masks, keeping {len(masks_data)} masks")
 
         processing_time = (datetime.now() - start_time).total_seconds()
 
