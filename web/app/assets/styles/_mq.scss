@@ -1,0 +1,58 @@
+// メディアクエリの定義
+
+$breakpoint-sp: 600px;
+$breakpoint-tab: 1023px;
+
+@mixin pc {
+  @media (min-width: ($breakpoint-tab + 0.02px)) {
+    @content;
+  }
+}
+
+@mixin not-pc {
+  @media (max-width: ($breakpoint-tab)) {
+    @content;
+  }
+}
+
+@mixin tab {
+  @media (min-width: ($breakpoint-sp + 0.02px)) and (max-width: ($breakpoint-tab)) {
+    @content;
+  }
+}
+
+@mixin not-sp {
+  @media (min-width: ($breakpoint-sp + 0.02px)) {
+    @content;
+  }
+}
+
+@mixin sp {
+  @media (max-width: ($breakpoint-sp)) {
+    @content;
+  }
+}
+
+.hidden-on-pc {
+  @include pc {
+    display: none !important;
+  }
+}
+
+.shown-on-pc {
+  @include not-pc {
+    display: none !important;
+  }
+}
+
+.hidden-on-sp {
+  @include sp {
+    display: none !important;
+  }
+}
+
+.shown-on-sp {
+  @include not-sp {
+    display: none !important;
+  }
+}
