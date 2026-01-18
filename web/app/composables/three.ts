@@ -11,6 +11,7 @@ export { createFireFeedback } from "./three/fire";
 export { createReticle } from "./three/reticle";
 export { createShotEffectManager } from "./three/shotEffect";
 export { createDestructionEffectManager } from "./three/destructionEffect";
+export { createScoreDisplay } from "./three/scoreDisplay";
 export { sendShotAndApplyBackground } from "./shot";
 
 // Segmentation

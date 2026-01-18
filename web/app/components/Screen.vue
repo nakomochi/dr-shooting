@@ -16,6 +16,7 @@ import {
   createReticle,
   createShotEffectManager,
   createDestructionEffectManager,
+  createScoreDisplay,
   sendShotAndApplyBackground,
   createSegmentationInit,
 } from '~/composables/three';
@@ -52,6 +53,23 @@ onMounted(async () => {
   // Segmentation initialization (AR mode only) - declare early for shotEffect reference
   let segmentationInit: ReturnType<typeof createSegmentationInit> | null = null;
 
+  // Score tracking
+  let destroyedCount = 0;
+  let totalCount = 0;
+
+  // Score display (3D sprite)
+  const scoreDisplay = createScoreDisplay({
+    distance: 1.5,
+    offsetX: -0.7,
+    offsetY: 0.5,
+    scale: 0.12,
+  });
+  three.scene.add(scoreDisplay.sprite);
+  cleanups.push(() => {
+    three.scene.remove(scoreDisplay.sprite);
+    scoreDisplay.dispose();
+  });
+
   // Destruction particle effect
   const destructionEffect = createDestructionEffectManager(three.scene, {
     particleCount: 40,
@@ -77,6 +95,9 @@ onMounted(async () => {
       const overlay = segmentationInit?.getMaskOverlay();
       overlay?.hideMask(result.maskId);
       destructionEffect.spawn(result.position, 0xff6600);
+      // Update score
+      destroyedCount++;
+      scoreDisplay.updateScore(destroyedCount, totalCount);
     },
   });
   cleanups.push(shotEffect.dispose);
@@ -225,6 +246,9 @@ onMounted(async () => {
         if (!segmentationInitialized && frame && segmentationInit) {
           segmentationInitialized = true;
           await segmentationInit.initialize(frame);
+          // Update total count after segmentation is ready
+          totalCount = segmentationInit.getMaskOverlay()?.getMaskCount() ?? 0;
+          scoreDisplay.updateScore(destroyedCount, totalCount);
         }
       });
     };
@@ -284,6 +308,10 @@ onMounted(async () => {
     reticleObj.update(three.camera, pointer.value.x, pointer.value.y, deltaSec);
     shotEffect.update();
     destructionEffect.update();
+
+    // Update score display position to follow camera
+    const xrCamera = three.renderer.xr.isPresenting ? three.renderer.xr.getCamera() : three.camera;
+    scoreDisplay.update(xrCamera);
 
     // Update segmentation mask anchors
     if (frame && segmentationInit?.isReady()) {
