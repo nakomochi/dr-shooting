@@ -14,7 +14,7 @@ export const setupXR = (renderer: WebGLRenderer, mode: XRMode = "vr") => {
 
   const button =
     mode === "ar"
-      ? ARButton.createButton(renderer, { requiredFeatures: ["hit-test"] })
+      ? ARButton.createButton(renderer, { optionalFeatures: ["hit-test"] })
       : VRButton.createButton(renderer);
 
   document.body.appendChild(button);

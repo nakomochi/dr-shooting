@@ -14,6 +14,7 @@ import {
   createFireFeedback,
   loadRifleModel,
   setupXR,
+  createReticle,
   sendShotAndApplyBackground,
 } from '~/composables/three';
 import { usePointerState, nudgePointer } from '~/composables/pointer';
@@ -163,6 +164,20 @@ onMounted(async () => {
     console.error('Failed to load rifle model', error);
   }
 
+  // 3D照準（レティクル）を作成してシーンに追加
+  const reticleObj = createReticle({
+    distance: 2,
+    centerSize: 0.015,
+    crosshairLength: 0.06,
+    ringRadii: [0.04, 0.055, 0.07],
+    ringSpeeds: [1.2, -0.8, 0.5],
+  });
+  three.scene.add(reticleObj.reticle);
+  cleanups.push(() => {
+    three.scene.remove(reticleObj.reticle);
+    reticleObj.dispose();
+  });
+
   // WebXR ボタン設置と有効化
   const xrCleanup = setupXR(three.renderer, useAR ? 'ar' : 'vr');
   cleanups.push(xrCleanup);
@@ -213,6 +228,8 @@ onMounted(async () => {
     updatePointerFromXR(frame, deltaSec);
     updatePointerFromKeyboard(deltaSec);
     aimRifle();
+    // 3Dレティクルを更新
+    reticleObj.update(three.camera, pointer.value.x, pointer.value.y, deltaSec);
   });
 
   three.start();
