@@ -1,79 +1,46 @@
-# Nuxt Minimal Starter
-
-Look at the [Nuxt documentation](https://nuxt.com/docs/getting-started/introduction) to learn more.
+# Web
 
 ## Setup
 
-Make sure to install dependencies:
-
 ```bash
-# npm
-npm install
-
-# pnpm
-pnpm install
-
-# yarn
-yarn install
-
-# bun
-bun install
+bun install --frozen-lockfile
 ```
 
-## Development Server
-
-Start the development server on `http://localhost:3000`:
+## Development
 
 ```bash
-# npm
-npm run dev
-
-# pnpm
-pnpm dev
-
-# yarn
-yarn dev
-
-# bun
 bun run dev
 ```
 
-## Production
+## Quest 3で開発環境を確認する（WebXR）
 
-Build the application for production:
+WebXRはHTTPSが必須
 
-```bash
-# npm
-npm run build
-
-# pnpm
-pnpm build
-
-# yarn
-yarn build
-
-# bun
-bun run build
-```
-
-Locally preview production build:
+### 1. mkcertで証明書を作成
 
 ```bash
-# npm
-npm run preview
-
-# pnpm
-pnpm preview
-
-# yarn
-yarn preview
-
-# bun
-bun run preview
+sudo apt install mkcert
+mkcert -install
 ```
 
-Check out the [deployment documentation](https://nuxt.com/docs/getting-started/deployment) for more information.
+/webで証明書を生成（IPは`ipconfig`(PowerShell)で確認して置き換える）:
 
-# Credits
+```bash
+cd web
+mkcert localhost 127.0.0.1 ::1 192.168.x.x
+```
 
-"RIFLE | M4A1 (no silencer) Weapon Model (CS2)" (https://skfb.ly/oU6TC) by gettan is licensed under Creative Commons Attribution (http://creativecommons.org/licenses/by/4.0/).
+生成されたファイル名を`nuxt.config.ts`の`https`設定と一致させる。
+
+### 2. Quest 3からアクセス
+
+**WiFi経由:**
+1. PCとQuest 3を同じWiFiに接続
+2. `bun run dev`
+3. Quest 3ブラウザで `https://192.168.x.x:3001`
+
+**USB-C経由:**
+1. Quest 3の開発者モードを有効化
+2. USB接続してデバッグを許可
+3. 接続したPC(PowerShellなど)で `adb reverse tcp:3001 tcp:3001`
+4. Quest 3ブラウザで `https://localhost:3001`
