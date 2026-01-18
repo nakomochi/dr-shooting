@@ -11,3 +11,10 @@ export { createFireFeedback } from "./three/fire";
 export { createReticle } from "./three/reticle";
 export { createShotEffectManager } from "./three/shotEffect";
 export { sendShotAndApplyBackground } from "./shot";
+
+// Segmentation
+export { createCameraCapture } from "./three/cameraCapture";
+export { createMaskOverlay } from "./three/maskOverlay";
+export { createHitTest } from "./three/hitTest";
+export { createSegmentationInit } from "./three/segmentationInit";
+export { requestSegmentation } from "./segmentation";

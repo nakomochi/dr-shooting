@@ -10,6 +10,14 @@ export default defineNuxtConfig({
       cert: "./localhost+3.pem",
     },
   },
+  runtimeConfig: {
+    public: {
+      // セグメンテーションAPIエンドポイント
+      // USB-C接続時: adb reverse tcp:8000 tcp:8000
+      // 環境変数 NUXT_PUBLIC_SEGMENT_API で上書き可能
+      segmentApi: "https://localhost:8000/segment",
+    },
+  },
   css: ["@/assets/styles/common.scss"],
   vite: {
     css: {

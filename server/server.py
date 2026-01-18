@@ -1,17 +1,36 @@
 """
 FastSAM WebSocket Server for Quest3 VR
 Tailscale経由で接続可能
+HTTP POST /segment エンドポイントも提供
 """
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 from ultralytics import FastSAM
 import base64
 import json
+import colorsys
 import numpy as np
 from PIL import Image
 from io import BytesIO
 import asyncio
 from datetime import datetime
+
+
+class SegmentRequest(BaseModel):
+    """セグメンテーションリクエストのスキーマ"""
+    image: str  # Base64 encoded
+    conf: float = 0.4
+    iou: float = 0.9
+    max_masks: int = 20
+
+
+def generate_distinct_color(index: int) -> list[int]:
+    """黄金比を使って視覚的に区別しやすい色を生成"""
+    golden_ratio = 0.618033988749895
+    hue = (index * golden_ratio) % 1.0
+    r, g, b = colorsys.hsv_to_rgb(hue, 0.7, 0.9)
+    return [int(r * 255), int(g * 255), int(b * 255)]
 
 app = FastAPI(title="FastSAM WebSocket Server")
 
@@ -36,8 +55,84 @@ async def root():
     return {
         "status": "running",
         "service": "FastSAM WebSocket Server",
-        "endpoint": "ws://[YOUR_TAILSCALE_IP]:8000/ws"
+        "endpoints": {
+            "websocket": "ws://localhost:8000/ws",
+            "http": "POST http://localhost:8000/segment"
+        }
     }
+
+
+@app.post("/segment")
+async def segment_image(request: SegmentRequest):
+    """
+    HTTP POST エンドポイント: 画像をセグメンテーション
+    WebXRからの一回限りのリクエスト用
+    """
+    start_time = datetime.now()
+
+    try:
+        # Base64デコード
+        image_data = base64.b64decode(request.image)
+        image = Image.open(BytesIO(image_data))
+
+        print(f"[HTTP] Processing image: {image.size}, conf={request.conf}, iou={request.iou}")
+
+        # FastSAMで推論
+        results = model(
+            image,
+            device="cpu",
+            retina_masks=True,
+            imgsz=640,
+            conf=request.conf,
+            iou=request.iou,
+        )
+
+        masks_data = []
+        if results[0].masks is not None:
+            masks = results[0].masks.data.cpu().numpy()
+            boxes = results[0].boxes.xyxy.cpu().numpy() if results[0].boxes is not None else None
+
+            for i, mask in enumerate(masks[:request.max_masks]):
+                # マスクをバイナリ化
+                binary_mask = (mask > 0.5).astype(np.uint8) * 255
+
+                # PNGとして圧縮
+                mask_img = Image.fromarray(binary_mask)
+                buffered = BytesIO()
+                mask_img.save(buffered, format="PNG", optimize=True)
+                mask_base64 = base64.b64encode(buffered.getvalue()).decode()
+
+                # bounding box (存在する場合)
+                bbox = boxes[i].tolist() if boxes is not None and i < len(boxes) else None
+
+                masks_data.append({
+                    "id": i,
+                    "data": mask_base64,
+                    "width": int(mask.shape[1]),
+                    "height": int(mask.shape[0]),
+                    "bbox": bbox,
+                    "color": generate_distinct_color(i),
+                })
+
+        processing_time = (datetime.now() - start_time).total_seconds()
+
+        print(f"[HTTP] Sent {len(masks_data)} masks in {processing_time:.3f}s")
+
+        return {
+            "success": True,
+            "count": len(masks_data),
+            "masks": masks_data,
+            "processing_time": processing_time,
+            "image_size": list(image.size)
+        }
+
+    except Exception as e:
+        print(f"[HTTP] Error: {e}")
+        return {
+            "success": False,
+            "error": str(e),
+            "masks": []
+        }
 
 
 @app.websocket("/ws")
@@ -154,21 +249,48 @@ async def websocket_endpoint(websocket: WebSocket):
 
 if __name__ == "__main__":
     import uvicorn
-    
+    import os
+    from pathlib import Path
+
     print("\n" + "="*60)
-    print("FastSAM WebSocket Server")
+    print("FastSAM Segmentation Server (HTTPS)")
     print("="*60)
     print("\nStarting server on 0.0.0.0:8000")
-    print("\nTailscale接続:")
-    print("  1. PC側でTailscaleを起動")
-    print("  2. Quest3でもTailscaleを起動")
-    print("  3. Unity側で ws://[PC_TAILSCALE_IP]:8000/ws に接続")
-    print("\nTailscale IPを確認: tailscale ip")
+    print("\nUSB-C接続 (Quest3):")
+    print("  adb reverse tcp:8000 tcp:8000")
+    print("  Quest3からは https://localhost:8000 でアクセス")
+    print("\nエンドポイント:")
+    print("  POST https://localhost:8000/segment")
     print("="*60 + "\n")
-    
-    uvicorn.run(
-        app,
-        host="0.0.0.0",  # すべてのインターフェースでリッスン
-        port=8000,
-        log_level="info"
-    )
+
+    # SSL証明書のパス (webディレクトリのmkcert証明書を使用)
+    script_dir = Path(__file__).resolve().parent
+    cert_dir = script_dir.parent / "web"
+    ssl_keyfile = cert_dir / "localhost+3-key.pem"
+    ssl_certfile = cert_dir / "localhost+3.pem"
+
+    print(f"証明書を探しています: {ssl_certfile}")
+
+    # 証明書が存在するか確認
+    if ssl_keyfile.exists() and ssl_certfile.exists():
+        print(f"✓ SSL証明書を使用: {ssl_certfile}")
+        uvicorn.run(
+            app,
+            host="0.0.0.0",
+            port=8000,
+            log_level="info",
+            ssl_keyfile=str(ssl_keyfile),
+            ssl_certfile=str(ssl_certfile),
+        )
+    else:
+        print(f"✗ 警告: SSL証明書が見つかりません")
+        print(f"  期待するパス: {ssl_certfile}")
+        print(f"  keyfile exists: {ssl_keyfile.exists()}")
+        print(f"  certfile exists: {ssl_certfile.exists()}")
+        print("\nHTTPで起動します（Quest3からはアクセスできない可能性があります）")
+        uvicorn.run(
+            app,
+            host="0.0.0.0",
+            port=8000,
+            log_level="info",
+        )

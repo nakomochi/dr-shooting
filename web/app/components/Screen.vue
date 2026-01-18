@@ -16,6 +16,7 @@ import {
   createReticle,
   createShotEffectManager,
   sendShotAndApplyBackground,
+  createSegmentationInit,
 } from '~/composables/three';
 import { usePointerState, nudgePointer } from '~/composables/pointer';
 import * as THREE from 'three';
@@ -172,6 +173,43 @@ onMounted(async () => {
   const xrCleanup = setupXR(three.renderer, useAR ? 'ar' : 'vr');
   cleanups.push(xrCleanup);
 
+  // Segmentation initialization (AR mode only)
+  let segmentationInit: ReturnType<typeof createSegmentationInit> | null = null;
+  if (useAR) {
+    segmentationInit = createSegmentationInit({
+      scene: three.scene,
+      camera: three.camera,
+      renderer: three.renderer,
+      maskOpacity: 0.4,
+      maskDistance: 2.5,
+      cameraFov: 97,
+      scaleFactor: 0.5,
+      offsetX: -0.1,
+      offsetY: -0.2,
+    });
+    cleanups.push(() => segmentationInit?.dispose());
+
+    // Initialize segmentation when XR session starts
+    let segmentationInitialized = false;
+    const initSegmentation = () => {
+      const session = three.renderer.xr.getSession();
+      if (!session || segmentationInitialized) return;
+
+      // Wait for first frame to get XRFrame
+      session.requestAnimationFrame(async (_time, frame) => {
+        if (!segmentationInitialized && frame && segmentationInit) {
+          segmentationInitialized = true;
+          await segmentationInit.initialize(frame);
+        }
+      });
+    };
+
+    three.renderer.xr.addEventListener('sessionstart', initSegmentation);
+    cleanups.push(() => {
+      three.renderer.xr.removeEventListener('sessionstart', initSegmentation);
+    });
+  }
+
   // Render loop
   let prevTime = 0;
   const pointerSpeed = 1.6;
@@ -220,6 +258,11 @@ onMounted(async () => {
     aimRifle();
     reticleObj.update(three.camera, pointer.value.x, pointer.value.y, deltaSec);
     shotEffect.update();
+
+    // Update segmentation mask anchors
+    if (frame && segmentationInit?.isReady()) {
+      segmentationInit.update(frame);
+    }
   });
 
   three.start();
