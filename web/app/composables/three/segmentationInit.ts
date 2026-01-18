@@ -15,6 +15,8 @@ export type SegmentationInitHandle = {
   isReady: () => boolean;
   /** Whether initialization is in progress */
   isInitializing: () => boolean;
+  /** Get mask overlay handle for hit testing */
+  getMaskOverlay: () => MaskOverlayHandle | null;
   /** Release resources */
   dispose: () => void;
 };
@@ -219,6 +221,7 @@ export const createSegmentationInit = (
 
   const isReady = () => ready;
   const isInitializing = () => initializing;
+  const getMaskOverlay = () => maskOverlay;
 
   const dispose = () => {
     maskOverlay?.dispose();
@@ -235,6 +238,7 @@ export const createSegmentationInit = (
     setVisible,
     isReady,
     isInitializing,
+    getMaskOverlay,
     dispose,
   };
 };

@@ -22,6 +22,10 @@ export type MaskOverlayHandle = {
   setVisible: (visible: boolean) => void;
   /** Get mask count */
   getMaskCount: () => number;
+  /** Get all masks for hit testing */
+  getMasks: () => MaskMesh[];
+  /** Hide a specific mask by ID */
+  hideMask: (maskId: number) => boolean;
   /** Release resources */
   dispose: () => void;
 };
@@ -150,6 +154,17 @@ export const createMaskOverlay = (
 
   const getMaskCount = () => masks.length;
 
+  const getMasks = () => [...masks];
+
+  const hideMask = (maskId: number): boolean => {
+    const maskMesh = masks.find((m) => m.maskId === maskId);
+    if (maskMesh) {
+      maskMesh.mesh.visible = false;
+      return true;
+    }
+    return false;
+  };
+
   const dispose = () => {
     for (const maskMesh of masks) {
       scene.remove(maskMesh.mesh);
@@ -174,6 +189,8 @@ export const createMaskOverlay = (
     updateAnchors,
     setVisible,
     getMaskCount,
+    getMasks,
+    hideMask,
     dispose,
   };
 };

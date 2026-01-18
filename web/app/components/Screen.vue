@@ -15,6 +15,7 @@ import {
   setupXR,
   createReticle,
   createShotEffectManager,
+  createDestructionEffectManager,
   sendShotAndApplyBackground,
   createSegmentationInit,
 } from '~/composables/three';
@@ -48,11 +49,35 @@ onMounted(async () => {
     },
   });
 
+  // Segmentation initialization (AR mode only) - declare early for shotEffect reference
+  let segmentationInit: ReturnType<typeof createSegmentationInit> | null = null;
+
+  // Destruction particle effect
+  const destructionEffect = createDestructionEffectManager(three.scene, {
+    particleCount: 40,
+    spreadSpeed: 0.4,
+    duration: 600,
+    particleSize: 0.025,
+    gravity: 3,
+  });
+  cleanups.push(destructionEffect.dispose);
+
   // 3D shot effect (bullet flying from gun to reticle)
   const shotEffect = createShotEffectManager(three.scene, {
     duration: 300,
     bulletSize: 0.02,
     color: 0xffff00,
+    getMasks: () => {
+      if (!segmentationInit?.isReady()) return [];
+      const overlay = segmentationInit.getMaskOverlay();
+      return overlay?.getMasks() ?? [];
+    },
+    onHit: (result) => {
+      console.log(`[Hit] Mask ${result.maskId} at`, result.position.toArray());
+      const overlay = segmentationInit?.getMaskOverlay();
+      overlay?.hideMask(result.maskId);
+      destructionEffect.spawn(result.position, 0xff6600);
+    },
   });
   cleanups.push(shotEffect.dispose);
 
@@ -68,12 +93,13 @@ onMounted(async () => {
     return tipOffset.clone().applyMatrix4(rifleModel.matrixWorld);
   };
 
-  // Get reticle position in world coordinates
+  // Get target position for bullet (beyond the masks at 2.5m, so bullet passes through)
   const getTargetPosition = (): THREE.Vector3 => {
     const ndc = new THREE.Vector3(pointer.value.x, pointer.value.y, 0.5);
     ndc.unproject(three.camera);
     const direction = ndc.sub(three.camera.position).normalize();
-    return three.camera.position.clone().add(direction.multiplyScalar(2));
+    // Shoot further than mask distance (2.5m) to ensure bullet can hit masks
+    return three.camera.position.clone().add(direction.multiplyScalar(5));
   };
 
   let rifle: THREE.Object3D | null = null;
@@ -155,9 +181,9 @@ onMounted(async () => {
     console.error('Failed to load rifle model', error);
   }
 
-  // 3D reticle
+  // 3D reticle (same distance as masks: 2.5m)
   const reticleObj = createReticle({
-    distance: 2,
+    distance: 2.5,
     centerSize: 0.015,
     crosshairLength: 0.06,
     ringRadii: [0.04, 0.055, 0.07],
@@ -174,7 +200,6 @@ onMounted(async () => {
   cleanups.push(xrCleanup);
 
   // Segmentation initialization (AR mode only)
-  let segmentationInit: ReturnType<typeof createSegmentationInit> | null = null;
   if (useAR) {
     segmentationInit = createSegmentationInit({
       scene: three.scene,
@@ -258,6 +283,7 @@ onMounted(async () => {
     aimRifle();
     reticleObj.update(three.camera, pointer.value.x, pointer.value.y, deltaSec);
     shotEffect.update();
+    destructionEffect.update();
 
     // Update segmentation mask anchors
     if (frame && segmentationInit?.isReady()) {

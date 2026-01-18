@@ -10,6 +10,7 @@ export { createQuest3InputHandler } from "./three/quest";
 export { createFireFeedback } from "./three/fire";
 export { createReticle } from "./three/reticle";
 export { createShotEffectManager } from "./three/shotEffect";
+export { createDestructionEffectManager } from "./three/destructionEffect";
 export { sendShotAndApplyBackground } from "./shot";
 
 // Segmentation
