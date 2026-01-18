@@ -17,6 +17,10 @@ export type SegmentationInitHandle = {
   isInitializing: () => boolean;
   /** Get mask overlay handle for hit testing */
   getMaskOverlay: () => MaskOverlayHandle | null;
+  /** Get combined inpainted image data (if using combined mode) */
+  getCombinedInpaintData: () => string | null;
+  /** Get image size [width, height] */
+  getImageSize: () => [number, number] | null;
   /** Release resources */
   dispose: () => void;
 };
@@ -67,6 +71,8 @@ export const createSegmentationInit = (
   let initializing = false;
   let maskOverlay: MaskOverlayHandle | null = null;
   let hitTest: HitTestHandle | null = null;
+  let combinedInpaintData: string | null = null;
+  let imageSize: [number, number] | null = null;
   const cameraCapture: CameraCaptureHandle = createCameraCapture({ renderer });
 
   const initialize = async (frame?: XRFrame) => {
@@ -144,6 +150,14 @@ export const createSegmentationInit = (
 
       console.log(`[SegmentationInit] Received ${result.count} masks`);
 
+      // Store combined inpaint data and image size
+      combinedInpaintData = result.combinedInpaintData ?? null;
+      imageSize = result.imageSize;
+
+      if (combinedInpaintData) {
+        console.log("[SegmentationInit] Combined inpaint data received");
+      }
+
       maskOverlay = createMaskOverlay({ scene, opacity: maskOpacity });
 
       const [imgWidth, imgHeight] = result.imageSize;
@@ -190,7 +204,10 @@ export const createSegmentationInit = (
           position,
           size,
           mask.id,
-          captureQuaternion
+          captureQuaternion,
+          mask.inpaint_data,
+          mask.inpaint_bbox,
+          mask.bbox ?? undefined
         );
       }
 
@@ -222,6 +239,8 @@ export const createSegmentationInit = (
   const isReady = () => ready;
   const isInitializing = () => initializing;
   const getMaskOverlay = () => maskOverlay;
+  const getCombinedInpaintData = () => combinedInpaintData;
+  const getImageSize = () => imageSize;
 
   const dispose = () => {
     maskOverlay?.dispose();
@@ -239,6 +258,8 @@ export const createSegmentationInit = (
     isReady,
     isInitializing,
     getMaskOverlay,
+    getCombinedInpaintData,
+    getImageSize,
     dispose,
   };
 };

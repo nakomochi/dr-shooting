@@ -4,6 +4,12 @@ export type MaskMesh = {
   mesh: THREE.Mesh;
   anchor: XRAnchor | null;
   maskId: number;
+  /** Base64-encoded JPEG of inpainted crop region */
+  inpaintData?: string;
+  /** Bounding box of inpainted crop [x1, y1, x2, y2] */
+  inpaintBbox?: [number, number, number, number];
+  /** Original mask bbox in image coordinates [x1, y1, x2, y2] */
+  originalBbox?: [number, number, number, number];
 };
 
 export type MaskOverlayHandle = {
@@ -14,7 +20,10 @@ export type MaskOverlayHandle = {
     position: THREE.Vector3,
     size: THREE.Vector2,
     id: number,
-    cameraQuaternion?: THREE.Quaternion
+    cameraQuaternion?: THREE.Quaternion,
+    inpaintData?: string,
+    inpaintBbox?: [number, number, number, number],
+    originalBbox?: [number, number, number, number]
   ) => Promise<MaskMesh>;
   /** Update positions from XRAnchors */
   updateAnchors: (frame: XRFrame, referenceSpace: XRReferenceSpace) => void;
@@ -73,7 +82,10 @@ export const createMaskOverlay = (
     position: THREE.Vector3,
     size: THREE.Vector2,
     id: number,
-    cameraQuaternion?: THREE.Quaternion
+    cameraQuaternion?: THREE.Quaternion,
+    inpaintData?: string,
+    inpaintBbox?: [number, number, number, number],
+    originalBbox?: [number, number, number, number]
   ): Promise<MaskMesh> => {
     const dataUrl = `data:image/png;base64,${maskBase64}`;
     const texture = await textureLoader.loadAsync(dataUrl);
@@ -118,6 +130,9 @@ export const createMaskOverlay = (
       mesh,
       anchor: null,
       maskId: id,
+      inpaintData,
+      inpaintBbox,
+      originalBbox,
     };
 
     masks.push(maskMesh);

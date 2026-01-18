@@ -84,6 +84,8 @@ onMounted(async () => {
   // White plane that appears when mask is destroyed
   const destructionPlane = createDestructionPlaneManager(three.scene, {
     scaleMultiplier: 1.1,
+    getCombinedInpaintData: () => segmentationInit?.getCombinedInpaintData() ?? null,
+    getImageSize: () => segmentationInit?.getImageSize() ?? null,
   });
   cleanups.push(destructionPlane.dispose);
 
@@ -101,8 +103,17 @@ onMounted(async () => {
       console.log(`[Hit] Mask ${result.maskId} at`, result.position.toArray());
       const overlay = segmentationInit?.getMaskOverlay();
 
-      // Spawn white plane with same shape as destroyed mask
-      destructionPlane.spawn(result.mask);
+      // Get inpaint data from the mask
+      const masks = overlay?.getMasks() ?? [];
+      const hitMaskData = masks.find((m) => m.maskId === result.maskId);
+
+      // Spawn plane with inpaint texture (or white fallback)
+      destructionPlane.spawn(
+        result.mask,
+        hitMaskData?.inpaintData,
+        hitMaskData?.inpaintBbox,
+        hitMaskData?.originalBbox
+      );
 
       overlay?.hideMask(result.maskId);
       destructionEffect.spawn(result.position, 0xff6600);

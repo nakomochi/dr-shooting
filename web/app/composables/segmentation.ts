@@ -8,6 +8,10 @@ export type MaskData = {
   bbox: [number, number, number, number] | null;
   /** RGB color [r, g, b] (0-255) */
   color: [number, number, number];
+  /** Base64-encoded JPEG of inpainted crop region */
+  inpaint_data?: string;
+  /** Bounding box of inpainted crop [x1, y1, x2, y2] */
+  inpaint_bbox?: [number, number, number, number];
 };
 
 export type SegmentationResult = {
@@ -17,6 +21,8 @@ export type SegmentationResult = {
   imageSize: [number, number];
   processingTime?: number;
   error?: string;
+  /** Combined inpainted image (full image with all masks removed) */
+  combinedInpaintData?: string;
 };
 
 export type SegmentationOptions = {
@@ -30,6 +36,10 @@ export type SegmentationOptions = {
   maxMasks?: number;
   /** Minimum area as fraction of image (default: 0.01 = 1%) */
   minArea?: number;
+  /** If true, inpaint all masks combined (faster); if false, inpaint each mask individually */
+  combinedInpaint?: boolean;
+  /** Pixels to dilate mask before inpainting */
+  dilatePixels?: number;
 };
 
 const getDefaultEndpoint = (): string => {
@@ -50,6 +60,8 @@ export const requestSegmentation = async (
     iou = 0.9,
     maxMasks = 20,
     minArea = 0.01,
+    combinedInpaint = true,
+    dilatePixels = 10,
   } = options;
 
   console.log(`[Segmentation] Sending request to ${endpoint}`);
@@ -66,6 +78,8 @@ export const requestSegmentation = async (
         iou,
         max_masks: maxMasks,
         min_area: minArea,
+        combined_inpaint: combinedInpaint,
+        dilate_pixels: dilatePixels,
       }),
     });
 
@@ -96,6 +110,7 @@ export const requestSegmentation = async (
       masks: data.masks,
       imageSize: data.image_size,
       processingTime: data.processing_time,
+      combinedInpaintData: data.combined_inpaint_data,
     };
   } catch (e) {
     const errorMessage = e instanceof Error ? e.message : String(e);

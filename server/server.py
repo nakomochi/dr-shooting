@@ -7,6 +7,8 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from ultralytics import FastSAM
+from simple_lama_inpainting import SimpleLama
+import cv2
 import base64
 import json
 import colorsys
@@ -24,6 +26,8 @@ class SegmentRequest(BaseModel):
     iou: float = 0.9
     max_masks: int = 20
     min_area: float = 0.01  # Minimum area as fraction of image (1% default)
+    combined_inpaint: bool = True  # If True, inpaint all masks combined; if False, inpaint each mask individually
+    dilate_pixels: int = 10  # Pixels to dilate mask before inpainting
 
 
 def generate_distinct_color(index: int) -> list[int]:
@@ -48,6 +52,25 @@ app.add_middleware(
 print("Loading FastSAM model...")
 model = FastSAM("FastSAM-s.pt")
 print("FastSAM model loaded successfully!")
+
+# LaMaモデルをロード
+print("Loading LaMa model...")
+lama_model = SimpleLama()
+print("LaMa model loaded successfully!")
+
+
+def expand_bbox(bbox: list[float], image_size: tuple[int, int], padding_ratio: float = 0.1) -> list[int]:
+    """Expand bounding box by padding ratio and return integer coordinates"""
+    x1, y1, x2, y2 = bbox
+    w, h = x2 - x1, y2 - y1
+    pad_x = w * padding_ratio
+    pad_y = h * padding_ratio
+    return [
+        int(max(0, x1 - pad_x)),
+        int(max(0, y1 - pad_y)),
+        int(min(image_size[0], x2 + pad_x)),
+        int(min(image_size[1], y2 + pad_y))
+    ]
 
 
 @app.get("/")
@@ -89,6 +112,8 @@ async def segment_image(request: SegmentRequest):
         )
 
         masks_data = []
+        combined_inpaint_data = None
+
         if results[0].masks is not None:
             masks = results[0].masks.data.cpu().numpy()
             boxes = results[0].boxes.xyxy.cpu().numpy() if results[0].boxes is not None else None
@@ -99,7 +124,10 @@ async def segment_image(request: SegmentRequest):
 
             print(f"[HTTP] Mask array shape: {masks.shape}, total_area={total_area}, min_area threshold={request.min_area}")
             print(f"[HTTP] Total masks before filtering: {len(masks)}")
+            print(f"[HTTP] Inpaint mode: {'combined' if request.combined_inpaint else 'individual'}, dilate: {request.dilate_pixels}px")
 
+            # First pass: filter masks and collect data
+            filtered_masks = []
             mask_id = 0
             skipped_count = 0
             for i, mask in enumerate(masks[:request.max_masks]):
@@ -116,8 +144,54 @@ async def segment_image(request: SegmentRequest):
 
                 print(f"[HTTP] Keeping mask {i}: pixels={mask_pixel_count}, ratio={mask_area_ratio:.4f}")
 
-                # Get bounding box (scale to original image size)
+                # Get bounding box
                 bbox = boxes[i].tolist() if boxes is not None and i < len(boxes) else None
+
+                filtered_masks.append({
+                    "original_idx": i,
+                    "mask_id": mask_id,
+                    "binary_mask": binary_mask,
+                    "bbox": bbox,
+                })
+                mask_id += 1
+
+            # Combined inpainting mode: merge all masks and inpaint once
+            if request.combined_inpaint and len(filtered_masks) > 0:
+                try:
+                    # Combine all masks into one
+                    combined_mask = np.zeros((mask_height, mask_width), dtype=np.uint8)
+                    for fm in filtered_masks:
+                        combined_mask = np.maximum(combined_mask, fm["binary_mask"])
+
+                    # Dilate the combined mask
+                    if request.dilate_pixels > 0:
+                        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (request.dilate_pixels * 2 + 1, request.dilate_pixels * 2 + 1))
+                        combined_mask = cv2.dilate(combined_mask, kernel, iterations=1)
+
+                    # Resize to original image size
+                    combined_mask_img = Image.fromarray(combined_mask * 255)
+                    combined_mask_resized = combined_mask_img.resize(image.size, Image.Resampling.NEAREST)
+
+                    # Run LaMa inpainting once for all masks
+                    print(f"[HTTP] Running combined inpainting...")
+                    inpaint_start = datetime.now()
+                    combined_inpainted = lama_model(image, combined_mask_resized)
+                    inpaint_time = (datetime.now() - inpaint_start).total_seconds()
+                    print(f"[HTTP] Combined inpainting done in {inpaint_time:.3f}s")
+
+                    # Encode full inpainted image as JPEG
+                    inpaint_buffered = BytesIO()
+                    combined_inpainted.save(inpaint_buffered, format="JPEG", quality=85)
+                    combined_inpaint_data = base64.b64encode(inpaint_buffered.getvalue()).decode()
+
+                except Exception as e:
+                    print(f"[HTTP] Combined inpainting failed: {e}")
+
+            # Build mask data
+            for fm in filtered_masks:
+                binary_mask = fm["binary_mask"]
+                bbox = fm["bbox"]
+                mask_id = fm["mask_id"]
 
                 # Convert mask to binary image
                 binary_mask_img = binary_mask * 255
@@ -128,15 +202,48 @@ async def segment_image(request: SegmentRequest):
                 mask_img.save(buffered, format="PNG", optimize=True)
                 mask_base64 = base64.b64encode(buffered.getvalue()).decode()
 
+                # Individual inpainting (only if not using combined mode)
+                inpaint_data = None
+                inpaint_bbox = None
+                if not request.combined_inpaint and bbox is not None:
+                    try:
+                        # Dilate mask for better coverage
+                        dilated_mask = binary_mask
+                        if request.dilate_pixels > 0:
+                            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (request.dilate_pixels * 2 + 1, request.dilate_pixels * 2 + 1))
+                            dilated_mask = cv2.dilate(binary_mask, kernel, iterations=1)
+
+                        # Resize mask to original image size for inpainting
+                        dilated_mask_img = Image.fromarray(dilated_mask * 255)
+                        mask_resized = dilated_mask_img.resize(image.size, Image.Resampling.NEAREST)
+
+                        # Run LaMa inpainting
+                        inpainted = lama_model(image, mask_resized)
+
+                        # Expand bbox and crop inpainted region
+                        inpaint_bbox = expand_bbox(bbox, image.size, padding_ratio=0.15)
+                        crop_x1, crop_y1, crop_x2, crop_y2 = inpaint_bbox
+                        inpaint_crop = inpainted.crop((crop_x1, crop_y1, crop_x2, crop_y2))
+
+                        # Encode as JPEG
+                        inpaint_buffered = BytesIO()
+                        inpaint_crop.save(inpaint_buffered, format="JPEG", quality=85)
+                        inpaint_data = base64.b64encode(inpaint_buffered.getvalue()).decode()
+
+                        print(f"[HTTP] Inpainted mask {mask_id}: crop size {inpaint_crop.size}")
+                    except Exception as e:
+                        print(f"[HTTP] Inpainting failed for mask {mask_id}: {e}")
+
                 masks_data.append({
                     "id": mask_id,
                     "data": mask_base64,
-                    "width": int(mask.shape[1]),
-                    "height": int(mask.shape[0]),
+                    "width": int(binary_mask.shape[1]),
+                    "height": int(binary_mask.shape[0]),
                     "bbox": bbox,
                     "color": generate_distinct_color(mask_id),
+                    "inpaint_data": inpaint_data,
+                    "inpaint_bbox": inpaint_bbox,
                 })
-                mask_id += 1
 
             print(f"[HTTP] Skipped {skipped_count} masks, keeping {len(masks_data)} masks")
 
@@ -149,7 +256,8 @@ async def segment_image(request: SegmentRequest):
             "count": len(masks_data),
             "masks": masks_data,
             "processing_time": processing_time,
-            "image_size": list(image.size)
+            "image_size": list(image.size),
+            "combined_inpaint_data": combined_inpaint_data,
         }
 
     except Exception as e:
