@@ -9,4 +9,5 @@ export { loadRifleModel } from "./three/models";
 export { createQuest3InputHandler } from "./three/quest";
 export { createFireFeedback } from "./three/fire";
 export { createReticle } from "./three/reticle";
+export { createShotEffectManager } from "./three/shotEffect";
 export { sendShotAndApplyBackground } from "./shot";
