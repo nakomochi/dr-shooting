@@ -36,6 +36,7 @@ class SegmentRequest(BaseModel):
     min_area: float = 0.005  # Minimum area as fraction of image (0.5% default)
     combined_inpaint: bool = True  # If True, inpaint all masks combined; if False, inpaint each mask individually
     dilate_pixels: int = 10  # Pixels to dilate mask before inpainting
+    inpaint_scale: float = 0.25  # Scale factor for inpainting (0.25-1.0, lower = faster but lower quality)
     exclude_background: Literal["none", "segformer", "heuristic"] = "none"  # Background exclusion method
     background_overlap_threshold: float = 0.5  # Overlap ratio threshold for background exclusion
 
@@ -387,12 +388,30 @@ async def segment_image(request: SegmentRequest):
                     combined_mask_img = Image.fromarray(combined_mask * 255)
                     combined_mask_resized = combined_mask_img.resize(image.size, Image.Resampling.NEAREST)
 
+                    # Scale down for faster inpainting
+                    inpaint_scale = max(0.25, min(1.0, request.inpaint_scale))
+                    original_size = image.size
+                    if inpaint_scale < 1.0:
+                        scaled_size = (int(original_size[0] * inpaint_scale), int(original_size[1] * inpaint_scale))
+                        image_scaled = image.resize(scaled_size, Image.Resampling.LANCZOS)
+                        mask_scaled = combined_mask_resized.resize(scaled_size, Image.Resampling.NEAREST)
+                        print(f"[HTTP] Inpainting at {inpaint_scale:.0%} scale: {scaled_size[0]}x{scaled_size[1]}")
+                    else:
+                        image_scaled = image
+                        mask_scaled = combined_mask_resized
+
                     # Run LaMa inpainting once for all masks
                     print(f"[HTTP] Running combined inpainting...")
                     inpaint_start = datetime.now()
-                    combined_inpainted = lama_model(image, combined_mask_resized)
+                    inpainted_scaled = lama_model(image_scaled, mask_scaled)
                     inpaint_time = (datetime.now() - inpaint_start).total_seconds()
                     print(f"[HTTP] Combined inpainting done in {inpaint_time:.3f}s")
+
+                    # Scale back up to original size if needed
+                    if inpaint_scale < 1.0:
+                        combined_inpainted = inpainted_scaled.resize(original_size, Image.Resampling.LANCZOS)
+                    else:
+                        combined_inpainted = inpainted_scaled
 
                     # Encode full inpainted image as JPEG
                     inpaint_buffered = BytesIO()
