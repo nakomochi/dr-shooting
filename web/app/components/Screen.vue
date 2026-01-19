@@ -20,6 +20,7 @@ import {
   createScoreDisplay,
   sendShotAndApplyBackground,
   createSegmentationInit,
+  createRoomMesh,
 } from '~/composables/three';
 import { usePointerState, nudgePointer } from '~/composables/pointer';
 import * as THREE from 'three';
@@ -53,6 +54,9 @@ onMounted(async () => {
 
   // Segmentation initialization (AR mode only) - declare early for shotEffect reference
   let segmentationInit: ReturnType<typeof createSegmentationInit> | null = null;
+
+  // Room mesh manager (AR mode only) - displays Quest3 scanned mesh
+  let roomMesh: ReturnType<typeof createRoomMesh> | null = null;
 
   // Score tracking
   let destroyedCount = 0;
@@ -257,11 +261,26 @@ onMounted(async () => {
     });
     cleanups.push(() => segmentationInit?.dispose());
 
-    // Initialize segmentation when XR session starts
+    // Room mesh manager for displaying Quest3 scanned mesh
+    roomMesh = createRoomMesh({
+      scene: three.scene,
+      color: 0x00ff00,  // Green
+      wireframe: true,
+      opacity: 0.5,
+    });
+    cleanups.push(() => roomMesh?.dispose());
+
+    // Initialize segmentation and room mesh when XR session starts
     let segmentationInitialized = false;
-    const initSegmentation = () => {
+    const initSegmentation = async () => {
       const session = three.renderer.xr.getSession();
       if (!session || segmentationInitialized) return;
+
+      // Start room mesh detection
+      if (roomMesh) {
+        const meshSupported = await roomMesh.start(session);
+        console.log('[Screen] Room mesh detection supported:', meshSupported);
+      }
 
       // Wait for first frame to get XRFrame
       session.requestAnimationFrame(async (_time, frame) => {
@@ -338,6 +357,14 @@ onMounted(async () => {
     // Update segmentation mask anchors
     if (frame && segmentationInit?.isReady()) {
       segmentationInit.update(frame);
+    }
+
+    // Update room mesh from WebXR mesh detection
+    if (frame && roomMesh) {
+      const referenceSpace = three.renderer.xr.getReferenceSpace();
+      if (referenceSpace) {
+        roomMesh.update(frame, referenceSpace);
+      }
     }
   });
 

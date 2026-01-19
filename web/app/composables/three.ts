@@ -21,3 +21,6 @@ export { createMaskOverlay } from "./three/maskOverlay";
 export { createHitTest } from "./three/hitTest";
 export { createSegmentationInit } from "./three/segmentationInit";
 export { requestSegmentation } from "./segmentation";
+
+// Room mesh (WebXR Mesh Detection)
+export { createRoomMesh } from "./three/roomMesh";

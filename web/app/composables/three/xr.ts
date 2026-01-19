@@ -46,7 +46,7 @@ const createCustomARButton = (renderer: WebGLRenderer): HTMLButtonElement => {
       try {
         const sessionInit: XRSessionInit = {
           requiredFeatures: ["local-floor"],
-          optionalFeatures: ["hit-test", "anchors"],
+          optionalFeatures: ["hit-test", "anchors", "mesh-detection"],
         };
 
         console.log("[XR] Requesting AR session...");
