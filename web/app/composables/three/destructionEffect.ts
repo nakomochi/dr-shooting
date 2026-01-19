@@ -1,8 +1,10 @@
 import * as THREE from "three";
 
 export type DestructionEffectOptions = {
-  /** Number of particles (default: 30) */
+  /** Number of particles for point spawn (default: 30) */
   particleCount?: number;
+  /** Number of particles for mask spawn (default: 100) */
+  maskParticleCount?: number;
   /** Particle spread speed (default: 0.3) */
   spreadSpeed?: number;
   /** Effect duration in ms (default: 500) */
@@ -28,6 +30,7 @@ export const createDestructionEffectManager = (
 ) => {
   const {
     particleCount = 30,
+    maskParticleCount = 100,
     spreadSpeed = 0.3,
     duration = 500,
     particleSize = 0.02,
@@ -39,7 +42,33 @@ export const createDestructionEffectManager = (
   let lastUpdateTime = performance.now();
 
   /**
-   * Spawn destruction effect at position
+   * Create a single particle at position with velocity
+   */
+  const createParticle = (
+    position: THREE.Vector3,
+    velocity: THREE.Vector3,
+    color: number,
+    size: number,
+    now: number
+  ) => {
+    const material = new THREE.MeshBasicMaterial({
+      color,
+      transparent: true,
+      opacity: 1,
+      depthTest: false,
+    });
+
+    const mesh = new THREE.Mesh(geometry, material);
+    mesh.position.copy(position);
+    mesh.scale.setScalar(size);
+    mesh.renderOrder = 1000;
+
+    scene.add(mesh);
+    activeParticles.push({ mesh, velocity, startTime: now });
+  };
+
+  /**
+   * Spawn destruction effect at a single point
    * @param position World position of the hit
    * @param color Color of particles (default: orange)
    */
@@ -47,18 +76,6 @@ export const createDestructionEffectManager = (
     const now = performance.now();
 
     for (let i = 0; i < particleCount; i++) {
-      const material = new THREE.MeshBasicMaterial({
-        color,
-        transparent: true,
-        opacity: 1,
-        depthTest: false,
-      });
-
-      const mesh = new THREE.Mesh(geometry, material);
-      mesh.position.copy(position);
-      mesh.scale.setScalar(particleSize * (0.5 + Math.random() * 0.5));
-      mesh.renderOrder = 1000;
-
       // Random velocity in sphere, biased upward
       const theta = Math.random() * Math.PI * 2;
       const phi = Math.acos(2 * Math.random() - 1);
@@ -70,8 +87,75 @@ export const createDestructionEffectManager = (
         Math.cos(phi) * speed
       );
 
-      scene.add(mesh);
-      activeParticles.push({ mesh, velocity, startTime: now });
+      const size = particleSize * (0.5 + Math.random() * 0.5);
+      createParticle(position.clone(), velocity, color, size, now);
+    }
+  };
+
+  /**
+   * Spawn destruction effect from entire mask surface
+   * Particles explode outward from all parts of the mask
+   * @param maskMesh The mask mesh to explode
+   * @param hitPosition The position where the bullet hit (for directional bias)
+   * @param color Color of particles (default: orange)
+   */
+  const spawnFromMask = (
+    maskMesh: THREE.Mesh,
+    hitPosition: THREE.Vector3,
+    color: number = 0xff6600
+  ) => {
+    const now = performance.now();
+
+    // Get mask's world transform
+    maskMesh.updateMatrixWorld(true);
+    const worldMatrix = maskMesh.matrixWorld;
+
+    // Get mask geometry bounds
+    const geo = maskMesh.geometry;
+    if (!geo.boundingBox) geo.computeBoundingBox();
+    const bbox = geo.boundingBox!;
+
+    // Get mask normal (facing direction)
+    const maskNormal = new THREE.Vector3(0, 0, 1).applyQuaternion(maskMesh.quaternion).normalize();
+
+    // Calculate mask center in world space
+    const maskCenter = new THREE.Vector3();
+    bbox.getCenter(maskCenter);
+    maskCenter.applyMatrix4(worldMatrix);
+
+    // Direction from hit point (for explosion bias)
+    const hitDir = maskCenter.clone().sub(hitPosition).normalize();
+
+    for (let i = 0; i < maskParticleCount; i++) {
+      // Random position within mask bounds (local space)
+      const localPos = new THREE.Vector3(
+        bbox.min.x + Math.random() * (bbox.max.x - bbox.min.x),
+        bbox.min.y + Math.random() * (bbox.max.y - bbox.min.y),
+        0 // Flat on mask surface
+      );
+
+      // Transform to world space
+      const worldPos = localPos.applyMatrix4(worldMatrix);
+
+      // Base velocity: outward from mask normal + random spread
+      const baseSpeed = spreadSpeed * (0.8 + Math.random() * 0.6);
+
+      // Combine mask normal direction with some randomness and hit direction
+      const randomDir = new THREE.Vector3(
+        (Math.random() - 0.5) * 0.8,
+        (Math.random() - 0.5) * 0.8 + 0.2, // Slight upward bias
+        (Math.random() - 0.5) * 0.8
+      );
+
+      const velocity = new THREE.Vector3()
+        .addScaledVector(maskNormal, baseSpeed * 0.6)
+        .addScaledVector(randomDir, baseSpeed * 0.4)
+        .addScaledVector(hitDir, baseSpeed * 0.2);
+
+      // Vary particle size
+      const size = particleSize * (0.3 + Math.random() * 0.7);
+
+      createParticle(worldPos, velocity, color, size, now);
     }
   };
 
@@ -128,5 +212,5 @@ export const createDestructionEffectManager = (
     geometry.dispose();
   };
 
-  return { spawn, update, dispose };
+  return { spawn, spawnFromMask, update, dispose };
 };

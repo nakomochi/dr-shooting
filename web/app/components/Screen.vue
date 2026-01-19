@@ -100,10 +100,11 @@ onMounted(async () => {
   // Destruction particle effect
   const destructionEffect = createDestructionEffectManager(three.scene, {
     particleCount: 40,
-    spreadSpeed: 0.4,
-    duration: 600,
+    maskParticleCount: 120,
+    spreadSpeed: 0.5,
+    duration: 800,
     particleSize: 0.025,
-    gravity: 3,
+    gravity: 2.5,
   });
   cleanups.push(destructionEffect.dispose);
 
@@ -142,7 +143,8 @@ onMounted(async () => {
       );
 
       overlay?.hideMask(result.maskId);
-      destructionEffect.spawn(result.position, 0xff6600);
+      // Spawn particles from entire mask surface
+      destructionEffect.spawnFromMask(result.mask, result.position, 0xff6600);
       // Update score
       destroyedCount++;
       scoreDisplay.updateScore(destroyedCount, totalCount);
