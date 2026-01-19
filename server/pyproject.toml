@@ -13,6 +13,7 @@ dependencies = [
     "simple-lama-inpainting>=0.1.1",
     "torch>=2.0.0",
     "torchvision>=0.15.0",
+    "transformers>=4.57.6",
     "ultralytics>=8.3.248",
     "uvicorn>=0.32.0",
     "websockets>=14.1",

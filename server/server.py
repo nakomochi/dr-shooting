@@ -8,6 +8,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from ultralytics import FastSAM
 from simple_lama_inpainting import SimpleLama
+from typing import Literal
+from transformers import SegformerForSemanticSegmentation, SegformerImageProcessor
+import torch
 import cv2
 import base64
 import json
@@ -17,17 +20,24 @@ from PIL import Image
 from io import BytesIO
 import asyncio
 from datetime import datetime
+from pathlib import Path
+
+# 出力ディレクトリを作成
+OUTPUT_DIR = Path(__file__).resolve().parent / "output"
+OUTPUT_DIR.mkdir(exist_ok=True)
 
 
 class SegmentRequest(BaseModel):
     """Segmentation request schema"""
     image: str  # Base64 encoded
-    conf: float = 0.4
+    conf: float = 0.25
     iou: float = 0.9
     max_masks: int = 20
-    min_area: float = 0.01  # Minimum area as fraction of image (1% default)
+    min_area: float = 0.005  # Minimum area as fraction of image (0.5% default)
     combined_inpaint: bool = True  # If True, inpaint all masks combined; if False, inpaint each mask individually
     dilate_pixels: int = 10  # Pixels to dilate mask before inpainting
+    exclude_background: Literal["none", "segformer", "heuristic"] = "none"  # Background exclusion method
+    background_overlap_threshold: float = 0.5  # Overlap ratio threshold for background exclusion
 
 
 def generate_distinct_color(index: int) -> list[int]:
@@ -58,6 +68,120 @@ print("Loading LaMa model...")
 lama_model = SimpleLama()
 print("LaMa model loaded successfully!")
 
+# SegFormerモデルをロード (ADE20K学習済み、壁/床/天井検出用)
+print("Loading SegFormer model...")
+segformer_processor = SegformerImageProcessor.from_pretrained("nvidia/segformer-b0-finetuned-ade-512-512")
+segformer_model = SegformerForSemanticSegmentation.from_pretrained("nvidia/segformer-b0-finetuned-ade-512-512")
+print("SegFormer model loaded successfully!")
+
+# ADE20Kの背景クラスID (壁=0, 床=3, 天井=5)
+BACKGROUND_CLASS_IDS = [0, 3, 5]
+
+
+def create_mask_overlay(img_array: np.ndarray, masks: np.ndarray) -> np.ndarray:
+    """マスクを画像にオーバーレイして可視化"""
+    overlay = img_array.copy()
+    for i, mask in enumerate(masks):
+        # マスクを元画像サイズにリサイズ
+        mask_resized = cv2.resize(
+            (mask > 0.5).astype(np.uint8),
+            (img_array.shape[1], img_array.shape[0]),
+            interpolation=cv2.INTER_NEAREST
+        )
+        color = generate_distinct_color(i)
+        # マスク領域に色を重ねる
+        for c in range(3):
+            overlay[:, :, c] = np.where(
+                mask_resized > 0,
+                overlay[:, :, c] * 0.5 + color[c] * 0.5,
+                overlay[:, :, c]
+            )
+    return overlay
+
+
+async def save_debug_images(
+    timestamp: str,
+    original_image: Image.Image,
+    raw_masks: np.ndarray | None,
+    filtered_masks: np.ndarray | None,
+    inpainted_image: Image.Image | None,
+    background_mask: np.ndarray | None = None,
+    segformer_predicted: np.ndarray | None = None,
+):
+    """非同期で画像をoutputディレクトリに保存"""
+    try:
+        # 元画像をnumpy配列に変換
+        img_array = np.array(original_image.convert("RGB"))
+
+        # 元画像を保存
+        original_path = OUTPUT_DIR / f"{timestamp}_original.jpg"
+        original_image.save(original_path, format="JPEG", quality=90)
+        print(f"[DEBUG] Saved: {original_path}")
+
+        # フィルタリング前のセグメンテーション結果を保存
+        if raw_masks is not None and len(raw_masks) > 0:
+            overlay_all = create_mask_overlay(img_array, raw_masks)
+            segmented_all_path = OUTPUT_DIR / f"{timestamp}_segmented_all.jpg"
+            Image.fromarray(overlay_all.astype(np.uint8)).save(segmented_all_path, format="JPEG", quality=90)
+            print(f"[DEBUG] Saved: {segmented_all_path} ({len(raw_masks)} masks)")
+
+        # フィルタリング後のセグメンテーション結果を保存
+        if filtered_masks is not None and len(filtered_masks) > 0:
+            overlay_filtered = create_mask_overlay(img_array, filtered_masks)
+            segmented_path = OUTPUT_DIR / f"{timestamp}_segmented.jpg"
+            Image.fromarray(overlay_filtered.astype(np.uint8)).save(segmented_path, format="JPEG", quality=90)
+            print(f"[DEBUG] Saved: {segmented_path} ({len(filtered_masks)} masks)")
+
+        # Inpaint結果を保存
+        if inpainted_image is not None:
+            inpainted_path = OUTPUT_DIR / f"{timestamp}_inpainted.jpg"
+            inpainted_image.save(inpainted_path, format="JPEG", quality=90)
+            print(f"[DEBUG] Saved: {inpainted_path}")
+
+        # 背景マスク（SegFormer）を保存
+        if background_mask is not None:
+            # 背景マスクを元画像サイズにリサイズ
+            bg_resized = cv2.resize(
+                background_mask,
+                (img_array.shape[1], img_array.shape[0]),
+                interpolation=cv2.INTER_NEAREST
+            )
+            # 背景領域を赤でオーバーレイ
+            bg_overlay = img_array.copy()
+            bg_overlay[:, :, 0] = np.where(bg_resized > 0, 255, bg_overlay[:, :, 0])  # R
+            bg_overlay[:, :, 1] = np.where(bg_resized > 0, bg_overlay[:, :, 1] * 0.5, bg_overlay[:, :, 1])  # G
+            bg_overlay[:, :, 2] = np.where(bg_resized > 0, bg_overlay[:, :, 2] * 0.5, bg_overlay[:, :, 2])  # B
+            background_path = OUTPUT_DIR / f"{timestamp}_background.jpg"
+            Image.fromarray(bg_overlay.astype(np.uint8)).save(background_path, format="JPEG", quality=90)
+            print(f"[DEBUG] Saved: {background_path}")
+
+        # SegFormer全クラス予測結果を保存
+        if segformer_predicted is not None:
+            # 各クラスに固有の色を割り当てて可視化
+            pred_resized = cv2.resize(
+                segformer_predicted.astype(np.uint8),
+                (img_array.shape[1], img_array.shape[0]),
+                interpolation=cv2.INTER_NEAREST
+            )
+            # クラスごとに色を生成
+            segformer_overlay = img_array.copy()
+            unique_classes = np.unique(pred_resized)
+            for class_id in unique_classes:
+                color = generate_distinct_color(class_id)
+                mask = pred_resized == class_id
+                for c in range(3):
+                    segformer_overlay[:, :, c] = np.where(
+                        mask,
+                        segformer_overlay[:, :, c] * 0.4 + color[c] * 0.6,
+                        segformer_overlay[:, :, c]
+                    )
+            segformer_path = OUTPUT_DIR / f"{timestamp}_segformer.jpg"
+            Image.fromarray(segformer_overlay.astype(np.uint8)).save(segformer_path, format="JPEG", quality=90)
+            print(f"[DEBUG] Saved: {segformer_path} ({len(unique_classes)} classes)")
+
+    except Exception as e:
+        print(f"[DEBUG] Failed to save debug images: {e}")
+
 
 def expand_bbox(bbox: list[float], image_size: tuple[int, int], padding_ratio: float = 0.1) -> list[int]:
     """Expand bounding box by padding ratio and return integer coordinates"""
@@ -71,6 +195,65 @@ def expand_bbox(bbox: list[float], image_size: tuple[int, int], padding_ratio: f
         int(min(image_size[0], x2 + pad_x)),
         int(min(image_size[1], y2 + pad_y))
     ]
+
+
+def get_background_mask_segformer(image: Image.Image) -> np.ndarray:
+    """SegFormerで壁/床/天井のマスクを取得"""
+    inputs = segformer_processor(images=image, return_tensors="pt")
+    with torch.no_grad():
+        outputs = segformer_model(**inputs)
+    logits = outputs.logits  # (1, num_classes, H, W)
+
+    # 最も確率の高いクラスを取得
+    predicted = logits.argmax(dim=1).squeeze().cpu().numpy()
+
+    # 背景クラス（壁/床/天井）に該当するピクセルをマスク
+    background_mask = np.isin(predicted, BACKGROUND_CLASS_IDS)
+
+    return background_mask.astype(np.uint8), predicted
+
+
+def filter_masks_by_background(
+    fastsam_masks: np.ndarray,
+    background_mask: np.ndarray,
+    threshold: float = 0.5
+) -> tuple[list[int], list[float]]:
+    """
+    壁/床/天井と重複するマスクを除外
+
+    Returns:
+        filtered_indices: 保持するマスクのインデックス
+        overlap_ratios: 各マスクの背景との重複率
+    """
+    # background_maskをFastSAMマスクサイズにリサイズ
+    mask_h, mask_w = fastsam_masks[0].shape
+    bg_resized = cv2.resize(
+        background_mask,
+        (mask_w, mask_h),
+        interpolation=cv2.INTER_NEAREST
+    )
+
+    filtered_indices = []
+    overlap_ratios = []
+
+    for i, mask in enumerate(fastsam_masks):
+        binary_mask = (mask > 0.5).astype(np.uint8)
+        mask_area = np.sum(binary_mask)
+        if mask_area == 0:
+            overlap_ratios.append(0.0)
+            continue
+
+        # 背景との重複率を計算
+        overlap = np.sum(binary_mask & bg_resized)
+        overlap_ratio = overlap / mask_area
+        overlap_ratios.append(overlap_ratio)
+
+        if overlap_ratio < threshold:
+            filtered_indices.append(i)
+        else:
+            print(f"[HTTP] Excluded mask {i}: {overlap_ratio:.1%} overlap with wall/floor/ceiling")
+
+    return filtered_indices, overlap_ratios
 
 
 @app.get("/")
@@ -99,7 +282,7 @@ async def segment_image(request: SegmentRequest):
         image_data = base64.b64decode(request.image)
         image = Image.open(BytesIO(image_data))
 
-        print(f"[HTTP] Processing image: {image.size}, conf={request.conf}, iou={request.iou}, min_area={request.min_area}")
+        print(f"[HTTP] Processing image: {image.size}, conf={request.conf}, iou={request.iou}, min_area={request.min_area}, exclude_background={request.exclude_background}")
 
         # FastSAMで推論
         results = model(
@@ -113,9 +296,14 @@ async def segment_image(request: SegmentRequest):
 
         masks_data = []
         combined_inpaint_data = None
+        combined_inpainted = None  # PIL Image for debug saving
+        raw_masks = None  # numpy array for debug visualization
+        background_mask = None  # SegFormerの背景マスク（デバッグ用）
+        segformer_predicted = None  # SegFormerの全クラス予測（デバッグ用）
 
         if results[0].masks is not None:
             masks = results[0].masks.data.cpu().numpy()
+            raw_masks = masks  # Store for debug visualization
             boxes = results[0].boxes.xyxy.cpu().numpy() if results[0].boxes is not None else None
 
             # Use mask dimensions for area calculation (FastSAM output size)
@@ -126,11 +314,38 @@ async def segment_image(request: SegmentRequest):
             print(f"[HTTP] Total masks before filtering: {len(masks)}")
             print(f"[HTTP] Inpaint mode: {'combined' if request.combined_inpaint else 'individual'}, dilate: {request.dilate_pixels}px")
 
+            # 背景除外フィルタリング
+            background_excluded_indices = None
+            if request.exclude_background == "segformer":
+                print("[HTTP] Running SegFormer for background detection...")
+                segformer_start = datetime.now()
+                background_mask, segformer_predicted = get_background_mask_segformer(image)
+                segformer_time = (datetime.now() - segformer_start).total_seconds()
+                print(f"[HTTP] SegFormer done in {segformer_time:.3f}s")
+
+                background_excluded_indices, overlap_ratios = filter_masks_by_background(
+                    masks[:request.max_masks],
+                    background_mask,
+                    request.background_overlap_threshold
+                )
+                print(f"[HTTP] Background filter: {len(masks[:request.max_masks])} -> {len(background_excluded_indices)} masks")
+            elif request.exclude_background == "heuristic":
+                # 将来の拡張用
+                print("[HTTP] Heuristic background filter not implemented yet")
+                background_excluded_indices = list(range(min(len(masks), request.max_masks)))
+            else:
+                # フィルタリングなし
+                background_excluded_indices = list(range(min(len(masks), request.max_masks)))
+
             # First pass: filter masks and collect data
             filtered_masks = []
             mask_id = 0
             skipped_count = 0
             for i, mask in enumerate(masks[:request.max_masks]):
+                # 背景フィルタで除外されたマスクはスキップ
+                if i not in background_excluded_indices:
+                    skipped_count += 1
+                    continue
                 # Calculate actual mask area by counting non-zero pixels
                 binary_mask = (mask > 0.5).astype(np.uint8)
                 mask_pixel_count = int(np.sum(binary_mask))
@@ -247,9 +462,26 @@ async def segment_image(request: SegmentRequest):
 
             print(f"[HTTP] Skipped {skipped_count} masks, keeping {len(masks_data)} masks")
 
+            # フィルタリング後のマスクを配列に変換
+            filtered_masks_array = np.array([fm["binary_mask"] for fm in filtered_masks]) if filtered_masks else None
+        else:
+            filtered_masks_array = None
+
         processing_time = (datetime.now() - start_time).total_seconds()
 
         print(f"[HTTP] Sent {len(masks_data)} masks in {processing_time:.3f}s")
+
+        # 非同期でデバッグ画像を保存（レスポンス返却後）
+        timestamp = start_time.strftime("%Y%m%d_%H%M%S")
+        asyncio.create_task(save_debug_images(
+            timestamp=timestamp,
+            original_image=image,
+            raw_masks=raw_masks,
+            filtered_masks=filtered_masks_array,
+            inpainted_image=combined_inpainted,
+            background_mask=background_mask,
+            segformer_predicted=segformer_predicted,
+        ))
 
         return {
             "success": True,

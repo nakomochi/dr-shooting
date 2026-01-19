@@ -40,6 +40,10 @@ export type SegmentationOptions = {
   combinedInpaint?: boolean;
   /** Pixels to dilate mask before inpainting */
   dilatePixels?: number;
+  /** Background exclusion method: "none", "segformer", "heuristic" */
+  excludeBackground?: "none" | "segformer" | "heuristic";
+  /** Overlap ratio threshold for background exclusion (default: 0.5) */
+  backgroundOverlapThreshold?: number;
 };
 
 const getDefaultEndpoint = (): string => {
@@ -59,9 +63,11 @@ export const requestSegmentation = async (
     conf = 0.4,
     iou = 0.9,
     maxMasks = 20,
-    minArea = 0.01,
+    minArea = 0.005,
     combinedInpaint = true,
     dilatePixels = 10,
+    excludeBackground = "segformer",
+    backgroundOverlapThreshold = 0.5,
   } = options;
 
   console.log(`[Segmentation] Sending request to ${endpoint}`);
@@ -80,6 +86,8 @@ export const requestSegmentation = async (
         min_area: minArea,
         combined_inpaint: combinedInpaint,
         dilate_pixels: dilatePixels,
+        exclude_background: excludeBackground,
+        background_overlap_threshold: backgroundOverlapThreshold,
       }),
     });
 

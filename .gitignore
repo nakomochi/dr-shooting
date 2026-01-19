@@ -24,6 +24,8 @@ landscape_*.jpg
 *_segmented.jpg
 *_inpaint_*.jpg
 
+/server/output/
+
 # Jupyter Notebook
 .ipynb_checkpoints
 *.ipynb
