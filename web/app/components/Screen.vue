@@ -22,13 +22,16 @@ import {
   createRoomMesh,
   createCalibrationMode,
   createImageCalibration,
+  createGameUI,
 } from '~/composables/three';
 import { usePointerState, nudgePointer } from '~/composables/pointer';
+import { useGamePhase, setGamePhase, updateGameScore, resetGamePhase } from '~/composables/gamePhase';
 import * as THREE from 'three';
 
 const canvasRef = ref<HTMLCanvasElement | null>(null);
 const cleanups: Array<() => void> = [];
 const pointer = usePointerState();
+const gamePhase = useGamePhase();
 const bgUrlHolder = { current: null as string | null };
 
 onMounted(async () => {
@@ -60,8 +63,10 @@ onMounted(async () => {
   let roomMesh: ReturnType<typeof createRoomMesh> | null = null;
 
   // Calibration mode (AR mode only) - for adjusting mask positions
-  let calibrationMode: ReturnType<typeof createCalibrationMode> | null = null;
-  let imageCalibration: ReturnType<typeof createImageCalibration> | null = null;
+  type CalibrationModeHandle = ReturnType<typeof createCalibrationMode>;
+  type ImageCalibrationHandle = ReturnType<typeof createImageCalibration>;
+  let calibrationMode = null as CalibrationModeHandle | null;
+  let imageCalibration = null as ImageCalibrationHandle | null;
   let calibrationCompleted = false;
 
   // Score tracking
@@ -79,6 +84,17 @@ onMounted(async () => {
   cleanups.push(() => {
     three.scene.remove(scoreDisplay.sprite);
     scoreDisplay.dispose();
+  });
+
+  // Game UI (3D sprite for capture/loading screens)
+  const gameUI = createGameUI({
+    distance: 1.2,
+    scale: 0.5,
+  });
+  three.scene.add(gameUI.sprite);
+  cleanups.push(() => {
+    three.scene.remove(gameUI.sprite);
+    gameUI.dispose();
   });
 
   // Destruction particle effect
@@ -130,6 +146,7 @@ onMounted(async () => {
       // Update score
       destroyedCount++;
       scoreDisplay.updateScore(destroyedCount, totalCount);
+      updateGameScore(destroyedCount, totalCount);
     },
   });
   cleanups.push(shotEffect.dispose);
@@ -157,7 +174,32 @@ onMounted(async () => {
 
   let rifle: THREE.Object3D | null = null;
 
+  // Flag to prevent double-capture
+  let captureTriggered = false;
+
+  // Trigger capture (called when user pulls trigger in capture phase)
+  // This function is defined here but needs calibration constants, so we'll update it in the AR block
+  let triggerCaptureImpl: (() => Promise<void>) | null = null;
+  const triggerCapture = async () => {
+    if (triggerCaptureImpl) {
+      await triggerCaptureImpl();
+    }
+  };
+
   const handleFireWithEffects = async () => {
+    const phase = gamePhase.value.phase;
+
+    // In capture phase, trigger capture instead of shooting
+    if (phase === 'capture') {
+      triggerCapture();
+      return;
+    }
+
+    // In loading phase, do nothing
+    if (phase === 'loading') {
+      return;
+    }
+
     // In image calibration mode, trigger confirms the calibration
     if (imageCalibration?.isActive()) {
       imageCalibration.confirm();
@@ -289,12 +331,84 @@ onMounted(async () => {
     });
     cleanups.push(() => segmentationInit?.dispose());
 
-    // Initialize segmentation and room mesh when XR session starts
-    let segmentationInitialized = false;
+    // Implement capture trigger with access to calibration constants
+    triggerCaptureImpl = async () => {
+      if (captureTriggered) return;
+      captureTriggered = true;
 
-    const initSegmentation = async () => {
       const session = three.renderer.xr.getSession();
-      if (!session || segmentationInitialized) return;
+      if (!session || !segmentationInit) {
+        captureTriggered = false;
+        return;
+      }
+
+      setGamePhase('loading');
+      gameUI.setPhase('loading');
+
+      // Wait for next frame to get XRFrame
+      session.requestAnimationFrame(async (_time, frame) => {
+        if (!frame || !segmentationInit) {
+          setGamePhase('capture');
+          gameUI.setPhase('capture');
+          captureTriggered = false;
+          return;
+        }
+
+        // Initialize segmentation (camera capture + server request)
+        await segmentationInit.initialize(frame);
+
+        // Update total count after segmentation is ready
+        totalCount = segmentationInit.getMaskOverlay()?.getMaskCount() ?? 0;
+        scoreDisplay.updateScore(destroyedCount, totalCount);
+        updateGameScore(destroyedCount, totalCount);
+
+        // Start calibration mode after segmentation is ready (only in calibration mode)
+        if (IS_CALIBRATION_MODE) {
+          const capturedImage = segmentationInit.getCapturedImageData();
+          const imageSize = segmentationInit.getImageSize();
+          if (capturedImage && imageSize) {
+            // Hide all masks during calibration - focus only on image calibration
+            segmentationInit.setVisible(false);
+
+            // Use image-based calibration: display captured image as transparent overlay
+            imageCalibration = createImageCalibration({
+              scene: three.scene,
+              camera: three.camera,
+              renderer: three.renderer,
+              imageData: capturedImage,
+              imageSize,
+              initialDistance: 2.5,
+              initialOffsetX: CALIBRATION_OFFSET_X,
+              initialOffsetY: CALIBRATION_OFFSET_Y,
+              initialScale: CALIBRATION_SCALE_FACTOR,
+              capturePosition: segmentationInit.getCapturePosition() ?? undefined,
+              captureQuaternion: segmentationInit.getCaptureQuaternion() ?? undefined,
+              cameraFov: 97,
+              onComplete: (params) => {
+                console.log('[Screen] Image calibration complete!');
+                console.log('[Screen] offsetX:', params.offsetX.toFixed(4));
+                console.log('[Screen] offsetY:', params.offsetY.toFixed(4));
+                console.log('[Screen] scale:', params.scale.toFixed(4));
+                calibrationCompleted = true;
+              },
+            });
+            imageCalibration.start();
+            cleanups.push(() => imageCalibration?.dispose());
+          }
+        } else {
+          calibrationCompleted = true;
+        }
+
+        // Transition to playing phase
+        setGamePhase('playing');
+        gameUI.setPhase(null);
+      });
+    };
+
+    // When XR session starts, transition to capture phase (no auto-segmentation)
+    const onARSessionStart = async () => {
+      const session = three.renderer.xr.getSession();
+      if (!session) return;
 
       // Start room mesh detection
       if (roomMesh) {
@@ -302,93 +416,24 @@ onMounted(async () => {
         console.log('[Screen] Room mesh detection supported:', meshSupported);
       }
 
-      // Wait for mesh detection to provide some data
-      // We'll poll for mesh availability with timeout
-      const MESH_WAIT_TIMEOUT = 3000; // 3 seconds max wait
-      const MESH_CHECK_INTERVAL = 100; // Check every 100ms
-      const startTime = Date.now();
-
-      const waitForMesh = (): Promise<boolean> => {
-        return new Promise((resolve) => {
-          const checkMesh = () => {
-            const meshes = roomMesh?.getMeshes() ?? [];
-            if (meshes.length > 0) {
-              console.log(`[Screen] Mesh detected: ${meshes.length} meshes available`);
-              resolve(true);
-              return;
-            }
-            if (Date.now() - startTime > MESH_WAIT_TIMEOUT) {
-              console.warn('[Screen] Mesh detection timeout, proceeding without mesh');
-              resolve(false);
-              return;
-            }
-            setTimeout(checkMesh, MESH_CHECK_INTERVAL);
-          };
-          checkMesh();
-        });
-      };
-
-      // Wait for first frame to get XRFrame
-      session.requestAnimationFrame(async (_time, frame) => {
-        if (!segmentationInitialized && frame && segmentationInit) {
-          segmentationInitialized = true;
-
-          // Wait for mesh to be available (with timeout)
-          await waitForMesh();
-
-          // Now initialize segmentation (will use mesh for positioning if available)
-          await segmentationInit.initialize(frame);
-
-          // Update total count after segmentation is ready
-          totalCount = segmentationInit.getMaskOverlay()?.getMaskCount() ?? 0;
-          scoreDisplay.updateScore(destroyedCount, totalCount);
-
-          // Start calibration mode after segmentation is ready (only in calibration mode)
-          if (IS_CALIBRATION_MODE) {
-            const capturedImage = segmentationInit.getCapturedImageData();
-            const imageSize = segmentationInit.getImageSize();
-            if (capturedImage && imageSize) {
-              // Hide all masks during calibration - focus only on image calibration
-              segmentationInit.setVisible(false);
-
-              // Use image-based calibration: display captured image as transparent overlay
-              // Apply initial offset from previous calibration
-              // Pass capture position/quaternion/FOV from segmentationInit to ensure consistent positioning
-              imageCalibration = createImageCalibration({
-                scene: three.scene,
-                camera: three.camera,
-                renderer: three.renderer,
-                imageData: capturedImage,
-                imageSize,
-                initialDistance: 2.5, // Same distance as masks
-                initialOffsetX: CALIBRATION_OFFSET_X,
-                initialOffsetY: CALIBRATION_OFFSET_Y,
-                initialScale: CALIBRATION_SCALE_FACTOR,
-                // Use the same camera position/orientation that was used when capturing the image
-                capturePosition: segmentationInit.getCapturePosition() ?? undefined,
-                captureQuaternion: segmentationInit.getCaptureQuaternion() ?? undefined,
-                cameraFov: 97, // Same FOV as segmentationInit (passthrough camera FOV)
-                onComplete: (params) => {
-                  console.log('[Screen] Image calibration complete!');
-                  console.log('[Screen] offsetX:', params.offsetX.toFixed(4));
-                  console.log('[Screen] offsetY:', params.offsetY.toFixed(4));
-                  console.log('[Screen] scale:', params.scale.toFixed(4));
-                  calibrationCompleted = true;
-                },
-              });
-              imageCalibration.start();
-              cleanups.push(() => imageCalibration?.dispose());
-            }
-          } else {
-            calibrationCompleted = true;
-          }
-        }
-      });
+      // Transition to capture phase - user will trigger capture manually
+      setGamePhase('capture');
+      gameUI.setPhase('capture');
     };
 
-    three.renderer.xr.addEventListener('sessionstart', initSegmentation);
+    const onARSessionEnd = () => {
+      // Reset game phase when session ends
+      resetGamePhase();
+      gameUI.setPhase(null);
+      captureTriggered = false;
+      calibrationCompleted = false;
+    };
+
+    three.renderer.xr.addEventListener('sessionstart', onARSessionStart);
+    three.renderer.xr.addEventListener('sessionend', onARSessionEnd);
     cleanups.push(() => {
-      three.renderer.xr.removeEventListener('sessionstart', initSegmentation);
+      three.renderer.xr.removeEventListener('sessionstart', onARSessionStart);
+      three.renderer.xr.removeEventListener('sessionend', onARSessionEnd);
     });
   }
 
@@ -457,6 +502,9 @@ onMounted(async () => {
     // Update score display position to follow camera
     const xrCamera = three.renderer.xr.isPresenting ? three.renderer.xr.getCamera() : three.camera;
     scoreDisplay.update(xrCamera);
+
+    // Update game UI (capture/loading screens)
+    gameUI.update(xrCamera, deltaSec);
 
     // Create anchors once after calibration is complete (not during calibration)
     if (frame && !anchorsCreated && segmentationInit?.isReady() && calibrationCompleted) {

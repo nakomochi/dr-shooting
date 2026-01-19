@@ -13,6 +13,7 @@ export { createShotEffectManager } from "./three/shotEffect";
 export { createDestructionEffectManager } from "./three/destructionEffect";
 export { createDestructionPlaneManager } from "./three/destructionPlane";
 export { createScoreDisplay } from "./three/scoreDisplay";
+export { createGameUI } from "./three/gameUI";
 
 // Segmentation
 export { createCameraCapture } from "./three/cameraCapture";
