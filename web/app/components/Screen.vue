@@ -143,8 +143,8 @@ onMounted(async () => {
       );
 
       overlay?.hideMask(result.maskId);
-      // Spawn particles from entire mask surface
-      destructionEffect.spawnFromMask(result.mask, result.position, 0xff6600);
+      // Spawn particles from entire mask surface (uses mask's color)
+      destructionEffect.spawnFromMask(result.mask, result.position);
       // Update score
       destroyedCount++;
       scoreDisplay.updateScore(destroyedCount, totalCount);

@@ -93,16 +93,45 @@ export const createDestructionEffectManager = (
   };
 
   /**
+   * Extract color from mask material (ShaderMaterial with maskColor uniform)
+   */
+  const getMaskColor = (maskMesh: THREE.Mesh): THREE.Color => {
+    const material = maskMesh.material as THREE.ShaderMaterial;
+    if (material.uniforms?.maskColor?.value) {
+      const v = material.uniforms.maskColor.value as THREE.Vector3;
+      return new THREE.Color(v.x, v.y, v.z);
+    }
+    return new THREE.Color(0xff6600); // Fallback orange
+  };
+
+  /**
+   * Generate varied color based on base color
+   * Adds brightness/saturation variation for more interesting particles
+   */
+  const varyColor = (baseColor: THREE.Color, variation: number = 0.3): THREE.Color => {
+    const hsl = { h: 0, s: 0, l: 0 };
+    baseColor.getHSL(hsl);
+
+    // Vary hue slightly, saturation and lightness more
+    const newH = hsl.h + (Math.random() - 0.5) * variation * 0.2;
+    const newS = Math.max(0, Math.min(1, hsl.s + (Math.random() - 0.5) * variation));
+    const newL = Math.max(0.2, Math.min(0.9, hsl.l + (Math.random() - 0.3) * variation));
+
+    return new THREE.Color().setHSL(newH, newS, newL);
+  };
+
+  /**
    * Spawn destruction effect from entire mask surface
    * Particles explode outward from all parts of the mask
+   * Uses mask's color for particles with variation
    * @param maskMesh The mask mesh to explode
    * @param hitPosition The position where the bullet hit (for directional bias)
-   * @param color Color of particles (default: orange)
+   * @param color Optional override color (if not provided, uses mask color)
    */
   const spawnFromMask = (
     maskMesh: THREE.Mesh,
     hitPosition: THREE.Vector3,
-    color: number = 0xff6600
+    color?: number
   ) => {
     const now = performance.now();
 
@@ -125,6 +154,11 @@ export const createDestructionEffectManager = (
 
     // Direction from hit point (for explosion bias)
     const hitDir = maskCenter.clone().sub(hitPosition).normalize();
+
+    // Get base color from mask or use provided color
+    const baseColor = color !== undefined
+      ? new THREE.Color(color)
+      : getMaskColor(maskMesh);
 
     for (let i = 0; i < maskParticleCount; i++) {
       // Random position within mask bounds (local space)
@@ -155,7 +189,10 @@ export const createDestructionEffectManager = (
       // Vary particle size
       const size = particleSize * (0.3 + Math.random() * 0.7);
 
-      createParticle(worldPos, velocity, color, size, now);
+      // Vary particle color
+      const particleColor = varyColor(baseColor, 0.4);
+
+      createParticle(worldPos, velocity, particleColor.getHex(), size, now);
     }
   };
 
