@@ -18,9 +18,9 @@ import {
   createDestructionEffectManager,
   createDestructionPlaneManager,
   createScoreDisplay,
-  sendShotAndApplyBackground,
   createSegmentationInit,
   createRoomMesh,
+  createCalibrationMode,
 } from '~/composables/three';
 import { usePointerState, nudgePointer } from '~/composables/pointer';
 import * as THREE from 'three';
@@ -57,6 +57,10 @@ onMounted(async () => {
 
   // Room mesh manager (AR mode only) - displays Quest3 scanned mesh
   let roomMesh: ReturnType<typeof createRoomMesh> | null = null;
+
+  // Calibration mode (AR mode only) - for adjusting mask positions
+  let calibrationMode: ReturnType<typeof createCalibrationMode> | null = null;
+  let calibrationCompleted = false;
 
   // Score tracking
   let destroyedCount = 0;
@@ -152,17 +156,14 @@ onMounted(async () => {
   let rifle: THREE.Object3D | null = null;
 
   const handleFireWithEffects = async () => {
+    // In calibration mode, trigger confirms current mask position
+    if (calibrationMode?.isActive()) {
+      calibrationMode.confirmCurrent();
+      return;
+    }
+
     handleFire();
     shotEffect.fire(getGunTipPosition(rifle), getTargetPosition());
-    try {
-      await sendShotAndApplyBackground({
-        canvasRef,
-        pointer,
-        previousUrl: bgUrlHolder,
-      });
-    } catch (error) {
-      console.error('Failed to send shot data', error);
-    }
   };
 
   // Keyboard input for pointer movement (non-XR fallback)
@@ -248,6 +249,23 @@ onMounted(async () => {
 
   // Segmentation initialization (AR mode only)
   if (useAR) {
+    // Room mesh manager for displaying Quest3 scanned mesh
+    // Create this first so we can pass it to segmentationInit
+    roomMesh = createRoomMesh({
+      scene: three.scene,
+      color: 0x00ff00,  // Green
+      wireframe: true,
+      opacity: 0.5,
+    });
+    roomMesh.setVisible(false);  // Hide mesh display (still used for raycasting)
+    cleanups.push(() => roomMesh?.dispose());
+
+    // Calibration parameters (from calibration results)
+    const CALIBRATION_SCALE_FACTOR = 0.46;
+    const CALIBRATION_OFFSET_X = -0.16;
+    const CALIBRATION_OFFSET_Y = 0.01;
+    const IS_CALIBRATION_MODE = false;
+
     segmentationInit = createSegmentationInit({
       scene: three.scene,
       camera: three.camera,
@@ -255,23 +273,16 @@ onMounted(async () => {
       maskOpacity: 0.4,
       maskDistance: 2.5,
       cameraFov: 97,
-      scaleFactor: 0.5,
-      offsetX: -0.1,
-      offsetY: -0.2,
+      scaleFactor: IS_CALIBRATION_MODE ? 1.0 : CALIBRATION_SCALE_FACTOR,
+      offsetX: IS_CALIBRATION_MODE ? 0 : CALIBRATION_OFFSET_X,
+      offsetY: IS_CALIBRATION_MODE ? 0 : CALIBRATION_OFFSET_Y,
+      useMeshPositioning: false,
     });
     cleanups.push(() => segmentationInit?.dispose());
 
-    // Room mesh manager for displaying Quest3 scanned mesh
-    roomMesh = createRoomMesh({
-      scene: three.scene,
-      color: 0x00ff00,  // Green
-      wireframe: true,
-      opacity: 0.5,
-    });
-    cleanups.push(() => roomMesh?.dispose());
-
     // Initialize segmentation and room mesh when XR session starts
     let segmentationInitialized = false;
+
     const initSegmentation = async () => {
       const session = three.renderer.xr.getSession();
       if (!session || segmentationInitialized) return;
@@ -282,14 +293,72 @@ onMounted(async () => {
         console.log('[Screen] Room mesh detection supported:', meshSupported);
       }
 
+      // Wait for mesh detection to provide some data
+      // We'll poll for mesh availability with timeout
+      const MESH_WAIT_TIMEOUT = 3000; // 3 seconds max wait
+      const MESH_CHECK_INTERVAL = 100; // Check every 100ms
+      const startTime = Date.now();
+
+      const waitForMesh = (): Promise<boolean> => {
+        return new Promise((resolve) => {
+          const checkMesh = () => {
+            const meshes = roomMesh?.getMeshes() ?? [];
+            if (meshes.length > 0) {
+              console.log(`[Screen] Mesh detected: ${meshes.length} meshes available`);
+              resolve(true);
+              return;
+            }
+            if (Date.now() - startTime > MESH_WAIT_TIMEOUT) {
+              console.warn('[Screen] Mesh detection timeout, proceeding without mesh');
+              resolve(false);
+              return;
+            }
+            setTimeout(checkMesh, MESH_CHECK_INTERVAL);
+          };
+          checkMesh();
+        });
+      };
+
       // Wait for first frame to get XRFrame
       session.requestAnimationFrame(async (_time, frame) => {
         if (!segmentationInitialized && frame && segmentationInit) {
           segmentationInitialized = true;
+
+          // Wait for mesh to be available (with timeout)
+          await waitForMesh();
+
+          // Now initialize segmentation (will use mesh for positioning if available)
           await segmentationInit.initialize(frame);
+
           // Update total count after segmentation is ready
           totalCount = segmentationInit.getMaskOverlay()?.getMaskCount() ?? 0;
           scoreDisplay.updateScore(destroyedCount, totalCount);
+
+          // Start calibration mode after segmentation is ready (only in calibration mode)
+          if (IS_CALIBRATION_MODE) {
+            const maskOverlay = segmentationInit.getMaskOverlay();
+            const imageSize = segmentationInit.getImageSize();
+            if (maskOverlay && imageSize && maskOverlay.getMaskCount() > 0) {
+              calibrationMode = createCalibrationMode({
+                maskOverlay,
+                camera: three.camera,
+                renderer: three.renderer,
+                imageSize,
+                cameraFov: 97,
+                maxCalibrationCount: 5,
+                onComplete: (params, samples) => {
+                  console.log('[Screen] Calibration complete!');
+                  console.log('[Screen] Parameters:', params);
+                  console.log('[Screen] Samples:', samples.length);
+                  calibrationCompleted = true;
+                },
+              });
+              calibrationMode.start();
+              cleanups.push(() => calibrationMode?.dispose());
+            }
+          } else {
+            calibrationCompleted = true;
+          }
         }
       });
     };
@@ -299,6 +368,9 @@ onMounted(async () => {
       three.renderer.xr.removeEventListener('sessionstart', initSegmentation);
     });
   }
+
+  // Track anchor creation state (outside AR block so render loop can access)
+  let anchorsCreated = false;
 
   // Render loop
   let prevTime = 0;
@@ -343,9 +415,16 @@ onMounted(async () => {
   three.onRender((time, frame) => {
     const deltaSec = prevTime ? (time - prevTime) / 1000 : 0;
     prevTime = time;
-    updatePointerFromXR(frame, deltaSec);
-    updatePointerFromKeyboard(deltaSec);
-    aimRifle();
+
+    // In calibration mode, update calibration instead of normal pointer movement
+    if (frame && calibrationMode?.isActive()) {
+      calibrationMode.update(frame, deltaSec);
+    } else {
+      updatePointerFromXR(frame, deltaSec);
+      updatePointerFromKeyboard(deltaSec);
+      aimRifle();
+    }
+
     reticleObj.update(three.camera, pointer.value.x, pointer.value.y, deltaSec);
     shotEffect.update();
     destructionEffect.update();
@@ -354,8 +433,14 @@ onMounted(async () => {
     const xrCamera = three.renderer.xr.isPresenting ? three.renderer.xr.getCamera() : three.camera;
     scoreDisplay.update(xrCamera);
 
-    // Update segmentation mask anchors
-    if (frame && segmentationInit?.isReady()) {
+    // Create anchors once after calibration is complete (not during calibration)
+    if (frame && !anchorsCreated && segmentationInit?.isReady() && calibrationCompleted) {
+      anchorsCreated = true;
+      segmentationInit.createAnchors(frame);
+    }
+
+    // Update segmentation mask anchors (only after calibration)
+    if (frame && segmentationInit?.isReady() && calibrationCompleted) {
       segmentationInit.update(frame);
     }
 

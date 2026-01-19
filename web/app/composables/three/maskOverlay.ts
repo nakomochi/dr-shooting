@@ -25,6 +25,8 @@ export type MaskOverlayHandle = {
     inpaintBbox?: [number, number, number, number],
     originalBbox?: [number, number, number, number]
   ) => Promise<MaskMesh>;
+  /** Create anchors for all masks (call once after adding masks) */
+  createAnchors: (frame: XRFrame, referenceSpace: XRReferenceSpace) => Promise<void>;
   /** Update positions from XRAnchors */
   updateAnchors: (frame: XRFrame, referenceSpace: XRReferenceSpace) => void;
   /** Show/hide all masks */
@@ -141,6 +143,40 @@ export const createMaskOverlay = (
     return maskMesh;
   };
 
+  const createAnchors = async (
+    frame: XRFrame,
+    referenceSpace: XRReferenceSpace
+  ): Promise<void> => {
+    // Check if anchor creation is supported
+    if (typeof frame.createAnchor !== "function") {
+      console.warn("[MaskOverlay] createAnchor not supported on this device");
+      return;
+    }
+
+    for (const maskMesh of masks) {
+      if (maskMesh.anchor) continue; // Already has anchor
+
+      try {
+        const { position, quaternion } = maskMesh.mesh;
+        const transform = new XRRigidTransform(
+          { x: position.x, y: position.y, z: position.z, w: 1 },
+          { x: quaternion.x, y: quaternion.y, z: quaternion.z, w: quaternion.w }
+        );
+
+        const anchor = await frame.createAnchor!(transform, referenceSpace);
+        if (anchor) {
+          maskMesh.anchor = anchor;
+          console.log(`[MaskOverlay] Created anchor for mask ${maskMesh.maskId}`);
+        }
+      } catch (e) {
+        console.warn(
+          `[MaskOverlay] Failed to create anchor for mask ${maskMesh.maskId}:`,
+          e
+        );
+      }
+    }
+  };
+
   const updateAnchors = (frame: XRFrame, referenceSpace: XRReferenceSpace) => {
     for (const maskMesh of masks) {
       if (!maskMesh.anchor) continue;
@@ -152,8 +188,14 @@ export const createMaskOverlay = (
         );
 
         if (anchorPose) {
-          const { position } = anchorPose.transform;
+          const { position, orientation } = anchorPose.transform;
           maskMesh.mesh.position.set(position.x, position.y, position.z);
+          maskMesh.mesh.quaternion.set(
+            orientation.x,
+            orientation.y,
+            orientation.z,
+            orientation.w
+          );
         }
       } catch {
         // Skip invalid anchors
@@ -201,6 +243,7 @@ export const createMaskOverlay = (
 
   return {
     addMask,
+    createAnchors,
     updateAnchors,
     setVisible,
     getMaskCount,

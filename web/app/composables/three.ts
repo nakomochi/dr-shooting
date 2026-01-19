@@ -13,7 +13,6 @@ export { createShotEffectManager } from "./three/shotEffect";
 export { createDestructionEffectManager } from "./three/destructionEffect";
 export { createDestructionPlaneManager } from "./three/destructionPlane";
 export { createScoreDisplay } from "./three/scoreDisplay";
-export { sendShotAndApplyBackground } from "./shot";
 
 // Segmentation
 export { createCameraCapture } from "./three/cameraCapture";
@@ -24,3 +23,6 @@ export { requestSegmentation } from "./segmentation";
 
 // Room mesh (WebXR Mesh Detection)
 export { createRoomMesh } from "./three/roomMesh";
+
+// Calibration mode
+export { createCalibrationMode } from "./three/calibrationMode";
