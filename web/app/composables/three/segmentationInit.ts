@@ -24,6 +24,12 @@ export type SegmentationInitHandle = {
   getCombinedInpaintData: () => string | null;
   /** Get image size [width, height] */
   getImageSize: () => [number, number] | null;
+  /** Get captured image data as base64 (for calibration) */
+  getCapturedImageData: () => string | null;
+  /** Get camera position at capture time (for calibration) */
+  getCapturePosition: () => THREE.Vector3 | null;
+  /** Get camera quaternion at capture time (for calibration) */
+  getCaptureQuaternion: () => THREE.Quaternion | null;
   /** Release resources */
   dispose: () => void;
 };
@@ -50,6 +56,8 @@ export type SegmentationInitOptions = {
   roomMesh?: RoomMeshHandle | null;
   /** Whether to use mesh-based positioning (default: true if roomMesh provided) */
   useMeshPositioning?: boolean;
+  /** Capture only mode - skip segmentation API, just capture image (for calibration) */
+  captureOnly?: boolean;
 };
 
 /**
@@ -74,6 +82,7 @@ export const createSegmentationInit = (
     offsetY = 0,
     roomMesh = null,
     useMeshPositioning = true,
+    captureOnly = false,
   } = options;
 
   // Raycaster for mesh intersection
@@ -85,6 +94,9 @@ export const createSegmentationInit = (
   let hitTest: HitTestHandle | null = null;
   let combinedInpaintData: string | null = null;
   let imageSize: [number, number] | null = null;
+  let capturedImageData: string | null = null;
+  let storedCapturePosition: THREE.Vector3 | null = null;
+  let storedCaptureQuaternion: THREE.Quaternion | null = null;
   const cameraCapture: CameraCaptureHandle = createCameraCapture({ renderer });
 
   const initialize = async (frame?: XRFrame) => {
@@ -125,6 +137,10 @@ export const createSegmentationInit = (
       const capturePosition = xrCamera.position.clone();
       const captureQuaternion = xrCamera.quaternion.clone();
 
+      // Store for external access (e.g., imageCalibration)
+      storedCapturePosition = capturePosition.clone();
+      storedCaptureQuaternion = captureQuaternion.clone();
+
       console.log("[SegmentationInit] Capture camera position:", capturePosition.toArray());
       console.log("[SegmentationInit] Capture camera quaternion:", captureQuaternion.toArray());
 
@@ -136,6 +152,33 @@ export const createSegmentationInit = (
 
       if (!imageBase64) {
         console.error("[SegmentationInit] Failed to capture image");
+        initializing = false;
+        return;
+      }
+
+      // Store captured image for calibration
+      capturedImageData = `data:image/jpeg;base64,${imageBase64}`;
+
+      // In capture-only mode, skip segmentation API and finish immediately
+      if (captureOnly) {
+        console.log("[SegmentationInit] Capture-only mode - skipping segmentation");
+        // Set a default image size from the captured image
+        // We'll estimate based on typical camera resolution
+        const img = new Image();
+        img.src = capturedImageData;
+        await new Promise<void>((resolve) => {
+          img.onload = () => {
+            imageSize = [img.width, img.height];
+            resolve();
+          };
+          img.onerror = () => {
+            // Fallback to typical Quest 3 camera resolution
+            imageSize = [1280, 960];
+            resolve();
+          };
+        });
+        console.log(`[SegmentationInit] Capture complete: ${imageSize![0]}x${imageSize![1]}`);
+        ready = true;
         initializing = false;
         return;
       }
@@ -225,17 +268,17 @@ export const createSegmentationInit = (
         let size: THREE.Vector2;
         let quaternion: THREE.Quaternion;
 
+        // Camera direction vectors (shared for all cases)
+        const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(captureQuaternion);
+        const right = new THREE.Vector3(1, 0, 0).applyQuaternion(captureQuaternion);
+        const up = new THREE.Vector3(0, 1, 0).applyQuaternion(captureQuaternion);
+
         if (mask.bbox) {
           const [x1, y1, x2, y2] = mask.bbox;
 
-          // Normalize image coordinates to -0.5 ~ 0.5 range + apply offset
-          const normX = (x1 + x2) / 2 / imgWidth - 0.5 + offsetX;
-          const normY = -((y1 + y2) / 2 / imgHeight - 0.5) + offsetY;
-
-          // Calculate ray direction from camera through bbox center
-          const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(captureQuaternion);
-          const right = new THREE.Vector3(1, 0, 0).applyQuaternion(captureQuaternion);
-          const up = new THREE.Vector3(0, 1, 0).applyQuaternion(captureQuaternion);
+          // Normalize image coordinates to -0.5 ~ 0.5 range (NO offset here - applied separately like imageCalibration)
+          const normX = (x1 + x2) / 2 / imgWidth - 0.5;
+          const normY = -((y1 + y2) / 2 / imgHeight - 0.5);
 
           // FOV-based angular offset
           const angleX = normX * fovRad;
@@ -255,13 +298,19 @@ export const createSegmentationInit = (
             const actualDistance = hitResult.distance;
 
             // Calculate view dimensions at actual distance
-            const viewHeightAtDist = 2 * actualDistance * Math.tan(fovRad / 2) * scaleFactor;
+            const viewHeightAtDist = 2 * actualDistance * Math.tan(fovRad / 2);
             const viewWidthAtDist = viewHeightAtDist * aspectRatio;
 
             // Position mask slightly in front of wall (5cm offset to avoid z-fighting)
-            position = hitResult.point.clone().add(hitResult.normal.clone().multiplyScalar(0.05));
+            const basePosition = hitResult.point.clone().add(hitResult.normal.clone().multiplyScalar(0.05));
 
-            // Calculate size based on actual distance
+            // Apply offset like imageCalibration: offset * distance (world space offset)
+            const offsetWorld = new THREE.Vector3()
+              .add(right.clone().multiplyScalar(offsetX * actualDistance))
+              .add(up.clone().multiplyScalar(offsetY * actualDistance));
+            position = basePosition.add(offsetWorld);
+
+            // Size without scaleFactor (scaleFactor applied via mesh.scale later)
             const bboxWidth = ((x2 - x1) / imgWidth) * viewWidthAtDist;
             const bboxHeight = ((y2 - y1) / imgHeight) * viewHeightAtDist;
             size = new THREE.Vector2(bboxWidth, bboxHeight);
@@ -271,15 +320,25 @@ export const createSegmentationInit = (
 
             console.log(`[SegmentationInit] Mask ${mask.id}: mesh hit at ${actualDistance.toFixed(2)}m, normal: [${hitResult.normal.toArray().map(n => n.toFixed(2)).join(', ')}]`);
           } else {
-            // Fallback: use fixed distance (original behavior)
-            const viewHeight = 2 * maskDistance * Math.tan(fovRad / 2) * scaleFactor;
+            // Fallback: use fixed distance
+            const viewHeight = 2 * maskDistance * Math.tan(fovRad / 2);
             const viewWidth = viewHeight * aspectRatio;
 
-            position = capturePosition.clone()
+            // Base position from bbox center
+            // IMPORTANT: Apply scaleFactor to position offset as well (same as imageCalibration applies scale to plane.scale)
+            // This ensures mask spacing matches the calibration image scaling
+            const basePosition = capturePosition.clone()
               .add(forward.clone().multiplyScalar(maskDistance))
-              .add(right.clone().multiplyScalar(normX * viewWidth))
-              .add(up.clone().multiplyScalar(normY * viewHeight));
+              .add(right.clone().multiplyScalar(normX * viewWidth * scaleFactor))
+              .add(up.clone().multiplyScalar(normY * viewHeight * scaleFactor));
 
+            // Apply offset like imageCalibration: offset * distance (world space offset)
+            const offsetWorld = new THREE.Vector3()
+              .add(right.clone().multiplyScalar(offsetX * maskDistance))
+              .add(up.clone().multiplyScalar(offsetY * maskDistance));
+            position = basePosition.add(offsetWorld);
+
+            // Size without scaleFactor (scaleFactor applied via mesh.scale later)
             const bboxWidth = ((x2 - x1) / imgWidth) * viewWidth;
             const bboxHeight = ((y2 - y1) / imgHeight) * viewHeight;
             size = new THREE.Vector2(bboxWidth, bboxHeight);
@@ -288,18 +347,18 @@ export const createSegmentationInit = (
             quaternion = captureQuaternion.clone();
 
             console.log(`[SegmentationInit] Mask ${mask.id}: no mesh hit, using fallback distance ${maskDistance}m`);
+            console.log(`[SegmentationInit] Mask ${mask.id}: quaternion = [${quaternion.x.toFixed(4)}, ${quaternion.y.toFixed(4)}, ${quaternion.z.toFixed(4)}, ${quaternion.w.toFixed(4)}]`);
           }
         } else {
           // No bbox - use full view at fixed distance
-          const viewHeight = 2 * maskDistance * Math.tan(fovRad / 2) * scaleFactor;
+          const viewHeight = 2 * maskDistance * Math.tan(fovRad / 2);
           const viewWidth = viewHeight * aspectRatio;
-          const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(captureQuaternion);
           position = capturePosition.clone().add(forward.multiplyScalar(maskDistance));
           size = new THREE.Vector2(viewWidth, viewHeight);
           quaternion = captureQuaternion.clone();
         }
 
-        await maskOverlay.addMask(
+        const addedMask = await maskOverlay.addMask(
           mask.data,
           mask.color,
           position,
@@ -310,6 +369,11 @@ export const createSegmentationInit = (
           mask.inpaint_bbox,
           mask.bbox ?? undefined
         );
+
+        // Apply scaleFactor via mesh.scale (same as imageCalibration's plane.scale.setScalar)
+        if (addedMask && scaleFactor !== 1.0) {
+          addedMask.mesh.scale.setScalar(scaleFactor);
+        }
       }
 
       ready = true;
@@ -358,6 +422,9 @@ export const createSegmentationInit = (
   const getMaskOverlay = () => maskOverlay;
   const getCombinedInpaintData = () => combinedInpaintData;
   const getImageSize = () => imageSize;
+  const getCapturedImageData = () => capturedImageData;
+  const getCapturePosition = () => storedCapturePosition;
+  const getCaptureQuaternion = () => storedCaptureQuaternion;
 
   const dispose = () => {
     maskOverlay?.dispose();
@@ -379,6 +446,9 @@ export const createSegmentationInit = (
     getMaskOverlay,
     getCombinedInpaintData,
     getImageSize,
+    getCapturedImageData,
+    getCapturePosition,
+    getCaptureQuaternion,
     dispose,
   };
 };

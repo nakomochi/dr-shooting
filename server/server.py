@@ -408,13 +408,30 @@ async def segment_image(request: SegmentRequest):
                 bbox = fm["bbox"]
                 mask_id = fm["mask_id"]
 
-                # Convert mask to binary image
+                # Convert mask to binary image and resize to original image size
                 binary_mask_img = binary_mask * 255
+                mask_img_full = Image.fromarray(binary_mask_img)
+                mask_img_resized = mask_img_full.resize(image.size, Image.Resampling.NEAREST)
+
+                # Crop mask to bbox region
+                if bbox is not None:
+                    x1, y1, x2, y2 = [int(v) for v in bbox]
+                    # Clamp to image bounds
+                    x1 = max(0, x1)
+                    y1 = max(0, y1)
+                    x2 = min(image.size[0], x2)
+                    y2 = min(image.size[1], y2)
+                    mask_cropped = mask_img_resized.crop((x1, y1, x2, y2))
+                    crop_width = x2 - x1
+                    crop_height = y2 - y1
+                else:
+                    mask_cropped = mask_img_resized
+                    crop_width = image.size[0]
+                    crop_height = image.size[1]
 
                 # Compress as PNG
-                mask_img = Image.fromarray(binary_mask_img)
                 buffered = BytesIO()
-                mask_img.save(buffered, format="PNG", optimize=True)
+                mask_cropped.save(buffered, format="PNG", optimize=True)
                 mask_base64 = base64.b64encode(buffered.getvalue()).decode()
 
                 # Individual inpainting (only if not using combined mode)
@@ -452,8 +469,8 @@ async def segment_image(request: SegmentRequest):
                 masks_data.append({
                     "id": mask_id,
                     "data": mask_base64,
-                    "width": int(binary_mask.shape[1]),
-                    "height": int(binary_mask.shape[0]),
+                    "width": crop_width,
+                    "height": crop_height,
                     "bbox": bbox,
                     "color": generate_distinct_color(mask_id),
                     "inpaint_data": inpaint_data,

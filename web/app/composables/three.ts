@@ -26,3 +26,4 @@ export { createRoomMesh } from "./three/roomMesh";
 
 // Calibration mode
 export { createCalibrationMode } from "./three/calibrationMode";
+export { createImageCalibration } from "./three/imageCalibration";

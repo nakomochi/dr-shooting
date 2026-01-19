@@ -21,6 +21,7 @@ import {
   createSegmentationInit,
   createRoomMesh,
   createCalibrationMode,
+  createImageCalibration,
 } from '~/composables/three';
 import { usePointerState, nudgePointer } from '~/composables/pointer';
 import * as THREE from 'three';
@@ -60,6 +61,7 @@ onMounted(async () => {
 
   // Calibration mode (AR mode only) - for adjusting mask positions
   let calibrationMode: ReturnType<typeof createCalibrationMode> | null = null;
+  let imageCalibration: ReturnType<typeof createImageCalibration> | null = null;
   let calibrationCompleted = false;
 
   // Score tracking
@@ -156,7 +158,13 @@ onMounted(async () => {
   let rifle: THREE.Object3D | null = null;
 
   const handleFireWithEffects = async () => {
-    // In calibration mode, trigger confirms current mask position
+    // In image calibration mode, trigger confirms the calibration
+    if (imageCalibration?.isActive()) {
+      imageCalibration.confirm();
+      return;
+    }
+
+    // In mask calibration mode, trigger confirms current mask position
     if (calibrationMode?.isActive()) {
       calibrationMode.confirmCurrent();
       return;
@@ -260,10 +268,10 @@ onMounted(async () => {
     roomMesh.setVisible(false);  // Hide mesh display (still used for raycasting)
     cleanups.push(() => roomMesh?.dispose());
 
-    // Calibration parameters (from calibration results)
-    const CALIBRATION_SCALE_FACTOR = 0.46;
-    const CALIBRATION_OFFSET_X = -0.16;
-    const CALIBRATION_OFFSET_Y = 0.01;
+    // Calibration parameters (from image calibration average of 2 tests)
+    const CALIBRATION_SCALE_FACTOR = 0.47;
+    const CALIBRATION_OFFSET_X = -0.024;
+    const CALIBRATION_OFFSET_Y = -0.203;
     const IS_CALIBRATION_MODE = false;
 
     segmentationInit = createSegmentationInit({
@@ -277,6 +285,7 @@ onMounted(async () => {
       offsetX: IS_CALIBRATION_MODE ? 0 : CALIBRATION_OFFSET_X,
       offsetY: IS_CALIBRATION_MODE ? 0 : CALIBRATION_OFFSET_Y,
       useMeshPositioning: false,
+      captureOnly: IS_CALIBRATION_MODE, // Skip segmentation API in calibration mode
     });
     cleanups.push(() => segmentationInit?.dispose());
 
@@ -336,25 +345,39 @@ onMounted(async () => {
 
           // Start calibration mode after segmentation is ready (only in calibration mode)
           if (IS_CALIBRATION_MODE) {
-            const maskOverlay = segmentationInit.getMaskOverlay();
+            const capturedImage = segmentationInit.getCapturedImageData();
             const imageSize = segmentationInit.getImageSize();
-            if (maskOverlay && imageSize && maskOverlay.getMaskCount() > 0) {
-              calibrationMode = createCalibrationMode({
-                maskOverlay,
+            if (capturedImage && imageSize) {
+              // Hide all masks during calibration - focus only on image calibration
+              segmentationInit.setVisible(false);
+
+              // Use image-based calibration: display captured image as transparent overlay
+              // Apply initial offset from previous calibration
+              // Pass capture position/quaternion/FOV from segmentationInit to ensure consistent positioning
+              imageCalibration = createImageCalibration({
+                scene: three.scene,
                 camera: three.camera,
                 renderer: three.renderer,
+                imageData: capturedImage,
                 imageSize,
-                cameraFov: 97,
-                maxCalibrationCount: 5,
-                onComplete: (params, samples) => {
-                  console.log('[Screen] Calibration complete!');
-                  console.log('[Screen] Parameters:', params);
-                  console.log('[Screen] Samples:', samples.length);
+                initialDistance: 2.5, // Same distance as masks
+                initialOffsetX: CALIBRATION_OFFSET_X,
+                initialOffsetY: CALIBRATION_OFFSET_Y,
+                initialScale: CALIBRATION_SCALE_FACTOR,
+                // Use the same camera position/orientation that was used when capturing the image
+                capturePosition: segmentationInit.getCapturePosition() ?? undefined,
+                captureQuaternion: segmentationInit.getCaptureQuaternion() ?? undefined,
+                cameraFov: 97, // Same FOV as segmentationInit (passthrough camera FOV)
+                onComplete: (params) => {
+                  console.log('[Screen] Image calibration complete!');
+                  console.log('[Screen] offsetX:', params.offsetX.toFixed(4));
+                  console.log('[Screen] offsetY:', params.offsetY.toFixed(4));
+                  console.log('[Screen] scale:', params.scale.toFixed(4));
                   calibrationCompleted = true;
                 },
               });
-              calibrationMode.start();
-              cleanups.push(() => calibrationMode?.dispose());
+              imageCalibration.start();
+              cleanups.push(() => imageCalibration?.dispose());
             }
           } else {
             calibrationCompleted = true;
@@ -417,7 +440,9 @@ onMounted(async () => {
     prevTime = time;
 
     // In calibration mode, update calibration instead of normal pointer movement
-    if (frame && calibrationMode?.isActive()) {
+    if (frame && imageCalibration?.isActive()) {
+      imageCalibration.update(frame, deltaSec);
+    } else if (frame && calibrationMode?.isActive()) {
       calibrationMode.update(frame, deltaSec);
     } else {
       updatePointerFromXR(frame, deltaSec);
