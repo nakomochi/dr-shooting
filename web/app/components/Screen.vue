@@ -79,6 +79,56 @@ onMounted(async () => {
   let completedTime = 0;
   const RESTART_COOLDOWN_MS = 3000;
 
+  // Recoil effect state
+  let recoilTime = 0;
+  const RECOIL_DURATION = 150; // ms
+  const RECOIL_INTENSITY = 0.03; // position offset
+  const RECOIL_ROTATION = 0.06; // rotation offset in radians
+  let rifleBasePosition: THREE.Vector3 | null = null;
+  let rifleBaseRotation: THREE.Euler | null = null;
+
+  const triggerRecoil = () => {
+    recoilTime = RECOIL_DURATION;
+    if (rifle && !rifleBasePosition) {
+      rifleBasePosition = rifle.position.clone();
+      rifleBaseRotation = rifle.rotation.clone();
+    }
+  };
+
+  const updateRecoil = (deltaSec: number) => {
+    if (recoilTime <= 0) return;
+
+    recoilTime -= deltaSec * 1000;
+    const progress = Math.max(0, recoilTime / RECOIL_DURATION);
+    // Shake with decay
+    const shake = progress * Math.sin(progress * Math.PI * 8);
+
+    // Apply recoil to rifle
+    if (rifle && rifleBasePosition && rifleBaseRotation) {
+      const offsetX = (Math.random() - 0.5) * RECOIL_INTENSITY * shake;
+      const offsetY = (Math.random() - 0.5) * RECOIL_INTENSITY * shake + RECOIL_INTENSITY * progress; // kick up
+      const offsetZ = RECOIL_INTENSITY * progress * 2; // kick back
+
+      rifle.position.set(
+        rifleBasePosition.x + offsetX,
+        rifleBasePosition.y + offsetY,
+        rifleBasePosition.z + offsetZ
+      );
+
+      rifle.rotation.set(
+        rifleBaseRotation.x - RECOIL_ROTATION * progress, // pitch up
+        rifleBaseRotation.y + (Math.random() - 0.5) * RECOIL_ROTATION * shake * 0.5,
+        rifleBaseRotation.z
+      );
+    }
+
+    // Reset when done
+    if (recoilTime <= 0 && rifle && rifleBasePosition && rifleBaseRotation) {
+      rifle.position.copy(rifleBasePosition);
+      rifle.rotation.copy(rifleBaseRotation);
+    }
+  };
+
   // Score display (3D sprite)
   const scoreDisplay = createScoreDisplay({
     distance: 1.5,
@@ -281,6 +331,7 @@ onMounted(async () => {
     }
 
     handleFire();
+    triggerRecoil();
     shotEffect.fire(getGunTipPosition(rifle), getTargetPosition());
   };
 
@@ -575,7 +626,19 @@ onMounted(async () => {
       aimRifle();
     }
 
-    reticleObj.update(three.camera, pointer.value.x, pointer.value.y, deltaSec);
+    // Update recoil effect
+    updateRecoil(deltaSec);
+
+    // Apply recoil shake to reticle position
+    let reticleX = pointer.value.x;
+    let reticleY = pointer.value.y;
+    if (recoilTime > 0) {
+      const progress = recoilTime / RECOIL_DURATION;
+      const shake = progress * Math.sin(progress * Math.PI * 8);
+      reticleX += (Math.random() - 0.5) * 0.04 * shake;
+      reticleY += (Math.random() - 0.5) * 0.04 * shake + 0.02 * progress; // kick up
+    }
+    reticleObj.update(three.camera, reticleX, reticleY, deltaSec);
     shotEffect.update();
     destructionEffect.update();
 
