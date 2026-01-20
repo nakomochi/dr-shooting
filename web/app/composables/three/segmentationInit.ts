@@ -34,6 +34,8 @@ export type SegmentationInitHandle = {
   dispose: () => void;
 };
 
+export type DepthMode = 'none' | 'center' | 'multi-point';
+
 export type SegmentationInitOptions = {
   scene: THREE.Scene;
   camera: THREE.PerspectiveCamera;
@@ -58,6 +60,10 @@ export type SegmentationInitOptions = {
   useMeshPositioning?: boolean;
   /** Capture only mode - skip segmentation API, just capture image (for calibration) */
   captureOnly?: boolean;
+  /** Depth mode: 'none' = fixed distance, 'center' = raycast at mask center, 'multi-point' = raycast at multiple points (default: 'center') */
+  depthMode?: DepthMode;
+  /** Number of sample points for multi-point depth mode (default: 5) */
+  depthSampleCount?: number;
 };
 
 /**
@@ -83,6 +89,8 @@ export const createSegmentationInit = (
     roomMesh = null,
     useMeshPositioning = true,
     captureOnly = false,
+    depthMode = 'center',
+    depthSampleCount = 5,
   } = options;
 
   // Raycaster for mesh intersection
@@ -251,16 +259,110 @@ export const createSegmentationInit = (
         return null;
       };
 
-      // Helper: Calculate quaternion to make plane face opposite to surface normal
-      // (i.e., plane's back faces the wall, front faces the camera)
-      const quaternionFromNormal = (normal: THREE.Vector3): THREE.Quaternion => {
-        // Plane's default normal is (0, 0, 1)
-        // We want the plane to face away from the wall (opposite of surface normal)
-        const targetDir = normal.clone().negate();
-        const defaultNormal = new THREE.Vector3(0, 0, 1);
-        const quaternion = new THREE.Quaternion();
-        quaternion.setFromUnitVectors(defaultNormal, targetDir);
-        return quaternion;
+      // Helper: Get ray origin for parallel projection
+      // Instead of shooting rays from camera at angles, we shoot parallel rays from offset positions
+      const viewHeight = 2 * maskDistance * Math.tan(fovRad / 2);
+      const viewWidth = viewHeight * aspectRatio;
+
+      const getParallelRayOrigin = (
+        imgX: number,
+        imgY: number,
+        right: THREE.Vector3,
+        up: THREE.Vector3
+      ): THREE.Vector3 => {
+        const normX = imgX / imgWidth - 0.5;
+        const normY = -(imgY / imgHeight - 0.5);
+        // Map 2D screen position to 3D space using calibrated scale
+        return capturePosition.clone()
+          .add(right.clone().multiplyScalar(normX * viewWidth * scaleFactor))
+          .add(up.clone().multiplyScalar(normY * viewHeight * scaleFactor));
+      };
+
+      // Minimum distance to prevent masks from being too close
+      const minDistance = 0.5;
+
+      // Helper: Get depth for a mask using center point raycast (parallel projection)
+      const getDepthCenter = (
+        bbox: [number, number, number, number],
+        forward: THREE.Vector3,
+        right: THREE.Vector3,
+        up: THREE.Vector3
+      ): { distance: number; normal: THREE.Vector3 | null; point: THREE.Vector3 | null } => {
+        const [x1, y1, x2, y2] = bbox;
+        const centerX = (x1 + x2) / 2;
+        const centerY = (y1 + y2) / 2;
+        // Parallel projection: ray origin is offset, direction is always forward
+        const rayOrigin = getParallelRayOrigin(centerX, centerY, right, up);
+        const hit = raycastToMesh(rayOrigin, forward);
+        if (hit) {
+          // If too close, fallback to default distance
+          if (hit.distance < minDistance) {
+            console.log(`[SegmentationInit] Hit too close (${hit.distance.toFixed(2)}m), using fallback`);
+            return { distance: maskDistance, normal: null, point: null };
+          }
+          return { distance: hit.distance, normal: hit.normal, point: hit.point };
+        }
+        return { distance: maskDistance, normal: null, point: null };
+      };
+
+      // Helper: Get depth for a mask using multiple point raycast (parallel projection)
+      const getDepthMultiPoint = (
+        bbox: [number, number, number, number],
+        forward: THREE.Vector3,
+        right: THREE.Vector3,
+        up: THREE.Vector3,
+        sampleCount: number
+      ): { distance: number; normal: THREE.Vector3 | null; point: THREE.Vector3 | null } => {
+        const [x1, y1, x2, y2] = bbox;
+        const centerX = (x1 + x2) / 2;
+        const centerY = (y1 + y2) / 2;
+        const bboxW = x2 - x1;
+        const bboxH = y2 - y1;
+        const margin = 0.2; // 20% margin from edges
+
+        // Sample points: center + 4 corners (with margin)
+        const samplePoints = [
+          { x: centerX, y: centerY }, // center
+          { x: x1 + bboxW * margin, y: y1 + bboxH * margin }, // top-left
+          { x: x2 - bboxW * margin, y: y1 + bboxH * margin }, // top-right
+          { x: x1 + bboxW * margin, y: y2 - bboxH * margin }, // bottom-left
+          { x: x2 - bboxW * margin, y: y2 - bboxH * margin }, // bottom-right
+        ].slice(0, sampleCount);
+
+        const validHits: { distance: number; normal: THREE.Vector3; point: THREE.Vector3 }[] = [];
+        for (const pt of samplePoints) {
+          // Parallel projection: ray origin is offset, direction is always forward
+          const rayOrigin = getParallelRayOrigin(pt.x, pt.y, right, up);
+          const hit = raycastToMesh(rayOrigin, forward);
+          if (hit) {
+            validHits.push({ distance: hit.distance, normal: hit.normal, point: hit.point });
+          }
+        }
+
+        if (validHits.length === 0) {
+          return { distance: maskDistance, normal: null, point: null };
+        }
+
+        // Average distance
+        const avgDistance = validHits.reduce((sum, h) => sum + h.distance, 0) / validHits.length;
+
+        // If average distance is too close, fallback to default distance
+        if (avgDistance < minDistance) {
+          console.log(`[SegmentationInit] Multi-point hit too close (${avgDistance.toFixed(2)}m), using fallback`);
+          return { distance: maskDistance, normal: null, point: null };
+        }
+
+        // Average normal
+        const avgNormal = new THREE.Vector3();
+        for (const hit of validHits) {
+          avgNormal.add(hit.normal);
+        }
+        avgNormal.normalize();
+
+        // Use center point (or first valid hit) for position calculation
+        const centerHit = validHits[0]!;
+
+        return { distance: avgDistance, normal: avgNormal, point: centerHit.point };
       };
 
       for (const mask of result.masks) {
@@ -280,74 +382,50 @@ export const createSegmentationInit = (
           const normX = (x1 + x2) / 2 / imgWidth - 0.5;
           const normY = -((y1 + y2) / 2 / imgHeight - 0.5);
 
-          // FOV-based angular offset
-          const angleX = normX * fovRad;
-          const angleY = normY * fovRad / aspectRatio;
+          // Get depth based on depthMode
+          let depthResult: { distance: number; normal: THREE.Vector3 | null; point: THREE.Vector3 | null };
 
-          // Ray direction considering FOV
-          const rayDir = forward.clone()
-            .add(right.clone().multiplyScalar(Math.tan(angleX)))
-            .add(up.clone().multiplyScalar(Math.tan(angleY)))
-            .normalize();
-
-          // Try raycast to mesh
-          const hitResult = raycastToMesh(capturePosition, rayDir);
-
-          if (hitResult) {
-            // Use mesh intersection for accurate depth and orientation
-            const actualDistance = hitResult.distance;
-
-            // Calculate view dimensions at actual distance
-            const viewHeightAtDist = 2 * actualDistance * Math.tan(fovRad / 2);
-            const viewWidthAtDist = viewHeightAtDist * aspectRatio;
-
-            // Position mask slightly in front of wall (5cm offset to avoid z-fighting)
-            const basePosition = hitResult.point.clone().add(hitResult.normal.clone().multiplyScalar(0.05));
-
-            // Apply offset like imageCalibration: offset * distance (world space offset)
-            const offsetWorld = new THREE.Vector3()
-              .add(right.clone().multiplyScalar(offsetX * actualDistance))
-              .add(up.clone().multiplyScalar(offsetY * actualDistance));
-            position = basePosition.add(offsetWorld);
-
-            // Size without scaleFactor (scaleFactor applied via mesh.scale later)
-            const bboxWidth = ((x2 - x1) / imgWidth) * viewWidthAtDist;
-            const bboxHeight = ((y2 - y1) / imgHeight) * viewHeightAtDist;
-            size = new THREE.Vector2(bboxWidth, bboxHeight);
-
-            // Orient mask parallel to wall surface
-            quaternion = quaternionFromNormal(hitResult.normal);
-
-            console.log(`[SegmentationInit] Mask ${mask.id}: mesh hit at ${actualDistance.toFixed(2)}m, normal: [${hitResult.normal.toArray().map(n => n.toFixed(2)).join(', ')}]`);
+          if (depthMode === 'multi-point' && canUseMesh) {
+            depthResult = getDepthMultiPoint(mask.bbox, forward, right, up, depthSampleCount);
+          } else if (depthMode === 'center' && canUseMesh) {
+            depthResult = getDepthCenter(mask.bbox, forward, right, up);
           } else {
-            // Fallback: use fixed distance
-            const viewHeight = 2 * maskDistance * Math.tan(fovRad / 2);
-            const viewWidth = viewHeight * aspectRatio;
+            // 'none' mode or mesh not available: use fixed distance
+            depthResult = { distance: maskDistance, normal: null, point: null };
+          }
 
-            // Base position from bbox center
-            // IMPORTANT: Apply scaleFactor to position offset as well (same as imageCalibration applies scale to plane.scale)
-            // This ensures mask spacing matches the calibration image scaling
-            const basePosition = capturePosition.clone()
-              .add(forward.clone().multiplyScalar(maskDistance))
-              .add(right.clone().multiplyScalar(normX * viewWidth * scaleFactor))
-              .add(up.clone().multiplyScalar(normY * viewHeight * scaleFactor));
+          const actualDistance = depthResult.distance;
+          const surfaceNormal = depthResult.normal;
 
-            // Apply offset like imageCalibration: offset * distance (world space offset)
-            const offsetWorld = new THREE.Vector3()
-              .add(right.clone().multiplyScalar(offsetX * maskDistance))
-              .add(up.clone().multiplyScalar(offsetY * maskDistance));
-            position = basePosition.add(offsetWorld);
+          // Calculate view dimensions at actual distance
+          const viewHeightAtDist = 2 * actualDistance * Math.tan(fovRad / 2);
+          const viewWidthAtDist = viewHeightAtDist * aspectRatio;
 
-            // Size without scaleFactor (scaleFactor applied via mesh.scale later)
-            const bboxWidth = ((x2 - x1) / imgWidth) * viewWidth;
-            const bboxHeight = ((y2 - y1) / imgHeight) * viewHeight;
-            size = new THREE.Vector2(bboxWidth, bboxHeight);
+          // Use same position calculation as fallback, but with depth from raycast
+          // This ensures XY position matches the calibrated image, only Z (depth) changes
+          const basePosition = capturePosition.clone()
+            .add(forward.clone().multiplyScalar(actualDistance))
+            .add(right.clone().multiplyScalar(normX * viewWidthAtDist * scaleFactor))
+            .add(up.clone().multiplyScalar(normY * viewHeightAtDist * scaleFactor));
 
-            // Face camera (original behavior)
-            quaternion = captureQuaternion.clone();
+          // Apply offset like imageCalibration: offset * distance (world space offset)
+          const offsetWorld = new THREE.Vector3()
+            .add(right.clone().multiplyScalar(offsetX * actualDistance))
+            .add(up.clone().multiplyScalar(offsetY * actualDistance));
+          position = basePosition.add(offsetWorld);
 
-            console.log(`[SegmentationInit] Mask ${mask.id}: no mesh hit, using fallback distance ${maskDistance}m`);
-            console.log(`[SegmentationInit] Mask ${mask.id}: quaternion = [${quaternion.x.toFixed(4)}, ${quaternion.y.toFixed(4)}, ${quaternion.z.toFixed(4)}, ${quaternion.w.toFixed(4)}]`);
+          // Size without scaleFactor (scaleFactor applied via mesh.scale later)
+          const bboxWidth = ((x2 - x1) / imgWidth) * viewWidthAtDist;
+          const bboxHeight = ((y2 - y1) / imgHeight) * viewHeightAtDist;
+          size = new THREE.Vector2(bboxWidth, bboxHeight);
+
+          // Face camera
+          quaternion = captureQuaternion.clone();
+
+          if (depthResult.point) {
+            console.log(`[SegmentationInit] Mask ${mask.id}: depth ${actualDistance.toFixed(2)}m (mode=${depthMode})`);
+          } else {
+            console.log(`[SegmentationInit] Mask ${mask.id}: fallback distance ${actualDistance.toFixed(2)}m (mode=${depthMode})`);
           }
         } else {
           // No bbox - use full view at fixed distance

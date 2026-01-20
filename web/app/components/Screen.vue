@@ -24,6 +24,7 @@ import {
   createImageCalibration,
   createGameUI,
   createHintArrow,
+  type DepthMode,
 } from '~/composables/three';
 import { usePointerState, nudgePointer } from '~/composables/pointer';
 import { useGamePhase, setGamePhase, updateGameScore, resetGamePhase } from '~/composables/gamePhase';
@@ -372,6 +373,10 @@ onMounted(async () => {
     const CALIBRATION_OFFSET_Y = -0.203;
     const IS_CALIBRATION_MODE = false;
 
+    // Depth mode: 'none' = fixed distance, 'center' = raycast at mask center, 'multi-point' = raycast at multiple points
+    // Set to 'none' to disable depth-based positioning (uses fixed 2.5m distance)
+    const DEPTH_MODE = 'center' as DepthMode;
+
     // Factory function to create segmentationInit (allows recreation on restart)
     const createSegmentationInitInstance = () => createSegmentationInit({
       scene: three.scene,
@@ -383,7 +388,9 @@ onMounted(async () => {
       scaleFactor: IS_CALIBRATION_MODE ? 1.0 : CALIBRATION_SCALE_FACTOR,
       offsetX: IS_CALIBRATION_MODE ? 0 : CALIBRATION_OFFSET_X,
       offsetY: IS_CALIBRATION_MODE ? 0 : CALIBRATION_OFFSET_Y,
-      useMeshPositioning: false,
+      roomMesh: roomMesh,
+      useMeshPositioning: DEPTH_MODE !== 'none',
+      depthMode: DEPTH_MODE,
       captureOnly: IS_CALIBRATION_MODE, // Skip segmentation API in calibration mode
     });
 
