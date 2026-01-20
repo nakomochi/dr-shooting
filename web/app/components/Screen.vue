@@ -75,6 +75,10 @@ onMounted(async () => {
   let destroyedCount = 0;
   let totalCount = 0;
 
+  // Completed phase cooldown (prevent accidental restart from trigger spam)
+  let completedTime = 0;
+  const RESTART_COOLDOWN_MS = 3000;
+
   // Score display (3D sprite)
   const scoreDisplay = createScoreDisplay({
     distance: 1.5,
@@ -171,6 +175,7 @@ onMounted(async () => {
       if (destroyedCount >= totalCount && totalCount > 0) {
         setGamePhase('completed');
         gameUI.setPhase('completed', destroyedCount, totalCount);
+        completedTime = performance.now();
       }
     },
   });
@@ -231,6 +236,11 @@ onMounted(async () => {
 
     // In completed phase, restart the game (go back to capture)
     if (phase === 'completed') {
+      // Check cooldown - prevent restart for 3 seconds after completion
+      if (performance.now() - completedTime < RESTART_COOLDOWN_MS) {
+        return;
+      }
+
       // Reset game state
       destroyedCount = 0;
       totalCount = 0;

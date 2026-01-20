@@ -54,20 +54,29 @@ export const createGameUI = (options: GameUIOptions = {}) => {
     // Background panel
     ctx.fillStyle = "rgba(0, 0, 0, 0.7)";
     ctx.beginPath();
-    ctx.roundRect(80, 40, 352, 176, 20);
+    ctx.roundRect(80, 20, 352, 216, 20);
     ctx.fill();
 
-    // Title text
-    ctx.fillStyle = "white";
-    ctx.font = "bold 32px sans-serif";
+    // Game title with glow effect
+    const titlePulse = 0.7 + 0.3 * Math.sin(animationTime * 2);
+    ctx.shadowColor = "#ff6600";
+    ctx.shadowBlur = 12 * titlePulse;
+    ctx.fillStyle = "#ff6600";
+    ctx.font = "bold 40px sans-serif";
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
-    ctx.fillText("Position your view", 256, 85);
+    ctx.fillText("DR Shooting", 256, 60);
+    ctx.shadowBlur = 0;
+
+    // Instruction title
+    ctx.fillStyle = "white";
+    ctx.font = "bold 24px sans-serif";
+    ctx.fillText("Position your view", 256, 110);
 
     // Instruction text
-    ctx.font = "22px sans-serif";
+    ctx.font = "20px sans-serif";
     ctx.fillStyle = "rgba(255, 255, 255, 0.8)";
-    ctx.fillText("Pull trigger to capture", 256, 125);
+    ctx.fillText("Pull trigger to capture", 256, 145);
 
     // Animated pulse ring
     const pulse = 0.5 + 0.5 * Math.sin(animationTime * 4);
@@ -77,14 +86,14 @@ export const createGameUI = (options: GameUIOptions = {}) => {
     ctx.strokeStyle = `rgba(255, 255, 255, ${ringAlpha})`;
     ctx.lineWidth = 3;
     ctx.beginPath();
-    ctx.arc(256, 175, ringRadius, 0, Math.PI * 2);
+    ctx.arc(256, 195, ringRadius, 0, Math.PI * 2);
     ctx.stroke();
 
     // Inner static ring
     ctx.strokeStyle = "rgba(255, 255, 255, 0.6)";
     ctx.lineWidth = 2;
     ctx.beginPath();
-    ctx.arc(256, 175, 12, 0, Math.PI * 2);
+    ctx.arc(256, 195, 12, 0, Math.PI * 2);
     ctx.stroke();
 
     texture.needsUpdate = true;
