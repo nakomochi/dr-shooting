@@ -1,6 +1,6 @@
 import * as THREE from "three";
 
-export type GameUIPhase = 'capture' | 'loading' | null;
+export type GameUIPhase = 'capture' | 'loading' | 'completed' | null;
 
 export type GameUIOptions = {
   /** Distance from camera (default: 1.2) */
@@ -131,17 +131,62 @@ export const createGameUI = (options: GameUIOptions = {}) => {
     texture.needsUpdate = true;
   };
 
+  let completedScore = { destroyed: 0, total: 0 };
+
+  /**
+   * Draw completed screen UI
+   */
+  const drawCompleted = () => {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    // Background panel
+    ctx.fillStyle = "rgba(0, 0, 0, 0.8)";
+    ctx.beginPath();
+    ctx.roundRect(60, 30, 392, 196, 20);
+    ctx.fill();
+
+    // Success title with glow effect
+    const pulse = 0.7 + 0.3 * Math.sin(animationTime * 3);
+    ctx.shadowColor = "#00ff00";
+    ctx.shadowBlur = 15 * pulse;
+    ctx.fillStyle = "#00ff00";
+    ctx.font = "bold 44px sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText("COMPLETE!", 256, 90);
+    ctx.shadowBlur = 0;
+
+    // Score
+    ctx.fillStyle = "white";
+    ctx.font = "bold 28px sans-serif";
+    ctx.fillText(`${completedScore.destroyed}/${completedScore.total}`, 256, 140);
+
+    // Restart instruction with pulsing opacity
+    const instructionAlpha = 0.5 + 0.5 * Math.sin(animationTime * 4);
+    ctx.font = "20px sans-serif";
+    ctx.fillStyle = `rgba(255, 255, 255, ${instructionAlpha})`;
+    ctx.fillText("Pull trigger to restart", 256, 190);
+
+    texture.needsUpdate = true;
+  };
+
   /**
    * Set the current UI phase
    */
-  const setPhase = (phase: GameUIPhase) => {
+  const setPhase = (phase: GameUIPhase, destroyed?: number, total?: number) => {
     currentPhase = phase;
     sprite.visible = phase !== null;
     animationTime = 0;
 
+    // Store score for completed phase
+    if (phase === 'completed' && destroyed !== undefined && total !== undefined) {
+      completedScore = { destroyed, total };
+    }
+
     // Draw initial frame
     if (phase === 'capture') drawCapture();
     else if (phase === 'loading') drawLoading();
+    else if (phase === 'completed') drawCompleted();
   };
 
   /**
@@ -166,6 +211,7 @@ export const createGameUI = (options: GameUIOptions = {}) => {
     // Redraw for animation
     if (currentPhase === 'capture') drawCapture();
     else if (currentPhase === 'loading') drawLoading();
+    else if (currentPhase === 'completed') drawCompleted();
   };
 
   const dispose = () => {

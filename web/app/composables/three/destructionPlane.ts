@@ -226,6 +226,16 @@ export const createDestructionPlaneManager = (
     planes.push({ mesh, material });
   };
 
+  /**
+   * Clear cached combined inpaint texture (call on restart to use new capture)
+   */
+  const clearCache = () => {
+    if (combinedInpaintTexture) {
+      combinedInpaintTexture.dispose();
+      combinedInpaintTexture = null;
+    }
+  };
+
   const dispose = () => {
     for (const plane of planes) {
       scene.remove(plane.mesh);
@@ -243,11 +253,8 @@ export const createDestructionPlaneManager = (
     planes.length = 0;
 
     // Dispose combined texture
-    if (combinedInpaintTexture) {
-      combinedInpaintTexture.dispose();
-      combinedInpaintTexture = null;
-    }
+    clearCache();
   };
 
-  return { spawn, dispose };
+  return { spawn, clearCache, dispose };
 };

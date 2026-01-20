@@ -23,6 +23,7 @@ import {
   createCalibrationMode,
   createImageCalibration,
   createGameUI,
+  createHintArrow,
 } from '~/composables/three';
 import { usePointerState, nudgePointer } from '~/composables/pointer';
 import { useGamePhase, setGamePhase, updateGameScore, resetGamePhase } from '~/composables/gamePhase';
@@ -97,6 +98,18 @@ onMounted(async () => {
     gameUI.dispose();
   });
 
+  // Hint arrow (points to nearest mask after idle time)
+  const hintArrow = createHintArrow({
+    distance: 0.8,
+    idleTime: 5,
+    color: 0xffff00,
+  });
+  three.scene.add(hintArrow.arrow);
+  cleanups.push(() => {
+    three.scene.remove(hintArrow.arrow);
+    hintArrow.dispose();
+  });
+
   // Destruction particle effect
   const destructionEffect = createDestructionEffectManager(three.scene, {
     particleCount: 40,
@@ -149,6 +162,15 @@ onMounted(async () => {
       destroyedCount++;
       scoreDisplay.updateScore(destroyedCount, totalCount);
       updateGameScore(destroyedCount, totalCount);
+
+      // Reset hint arrow timer on destroy
+      hintArrow.onDestroy();
+
+      // Check for game completion
+      if (destroyedCount >= totalCount && totalCount > 0) {
+        setGamePhase('completed');
+        gameUI.setPhase('completed', destroyedCount, totalCount);
+      }
     },
   });
   cleanups.push(shotEffect.dispose);
@@ -188,6 +210,9 @@ onMounted(async () => {
     }
   };
 
+  // Function to recreate segmentationInit (set in AR block)
+  let recreateSegmentationInit: (() => void) | null = null;
+
   const handleFireWithEffects = async () => {
     const phase = gamePhase.value.phase;
 
@@ -199,6 +224,35 @@ onMounted(async () => {
 
     // In loading phase, do nothing
     if (phase === 'loading') {
+      return;
+    }
+
+    // In completed phase, restart the game (go back to capture)
+    if (phase === 'completed') {
+      // Reset game state
+      destroyedCount = 0;
+      totalCount = 0;
+      anchorsCreated = false;
+      captureTriggered = false;
+      calibrationCompleted = false;
+
+      // Reset hint arrow
+      hintArrow.reset();
+
+      // Clear cached inpaint texture (so next game uses new capture)
+      destructionPlane.clearCache();
+
+      // Clear existing masks and recreate segmentationInit
+      segmentationInit?.dispose();
+      if (recreateSegmentationInit) {
+        recreateSegmentationInit();
+      }
+
+      // Transition to capture phase
+      setGamePhase('capture');
+      gameUI.setPhase('capture');
+      scoreDisplay.updateScore(0, 0);
+      updateGameScore(0, 0);
       return;
     }
 
@@ -318,7 +372,8 @@ onMounted(async () => {
     const CALIBRATION_OFFSET_Y = -0.203;
     const IS_CALIBRATION_MODE = false;
 
-    segmentationInit = createSegmentationInit({
+    // Factory function to create segmentationInit (allows recreation on restart)
+    const createSegmentationInitInstance = () => createSegmentationInit({
       scene: three.scene,
       camera: three.camera,
       renderer: three.renderer,
@@ -331,7 +386,14 @@ onMounted(async () => {
       useMeshPositioning: false,
       captureOnly: IS_CALIBRATION_MODE, // Skip segmentation API in calibration mode
     });
+
+    segmentationInit = createSegmentationInitInstance();
     cleanups.push(() => segmentationInit?.dispose());
+
+    // Allow recreation of segmentationInit on restart
+    recreateSegmentationInit = () => {
+      segmentationInit = createSegmentationInitInstance();
+    };
 
     // Implement capture trigger with access to calibration constants
     triggerCaptureImpl = async () => {
@@ -507,6 +569,14 @@ onMounted(async () => {
 
     // Update game UI (capture/loading screens)
     gameUI.update(xrCamera, deltaSec);
+
+    // Update hint arrow (only during playing phase)
+    if (gamePhase.value.phase === 'playing' && segmentationInit?.isReady()) {
+      const masks = segmentationInit.getMaskOverlay()?.getMasks() ?? [];
+      hintArrow.update(xrCamera, masks, deltaSec);
+    } else {
+      hintArrow.arrow.visible = false;
+    }
 
     // Create anchors once after calibration is complete (not during calibration)
     if (frame && !anchorsCreated && segmentationInit?.isReady() && calibrationCompleted) {

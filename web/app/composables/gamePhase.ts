@@ -1,7 +1,7 @@
 import { useState } from "#app";
 
 /** ゲームのフェーズ */
-export type GamePhase = 'idle' | 'capture' | 'loading' | 'playing';
+export type GamePhase = 'idle' | 'capture' | 'loading' | 'playing' | 'completed';
 
 /** ゲームフェーズの状態 */
 export type GamePhaseState = {
