@@ -13,6 +13,8 @@ export type ShotEffectOptions = {
   bulletSize?: number;
   /** Bullet color (default: yellow) */
   color?: number;
+  /** Distance from start position where bullet becomes visible (default: 0.5) */
+  invisibleDistance?: number;
   /** Callback when bullet hits a mask */
   onHit?: (result: HitResult) => void;
   /** Function to get current mask meshes for collision detection */
@@ -27,6 +29,7 @@ export const createShotEffectManager = (scene: THREE.Scene, options: ShotEffectO
     duration = 300,
     bulletSize = 0.03,
     color = 0xffff00,
+    invisibleDistance = 0.5,
     onHit,
     getMasks,
   } = options;
@@ -164,6 +167,10 @@ export const createShotEffectManager = (scene: THREE.Scene, options: ShotEffectO
 
       // Update previous position for next frame
       bullet.prevPosition.copy(bullet.mesh.position);
+
+      // Hide bullet near the gun barrel (so it appears to come from the gun tip)
+      const distanceFromStart = bullet.mesh.position.distanceTo(bullet.startPosition);
+      bullet.mesh.visible = distanceFromStart > invisibleDistance;
 
       // Fade out in the last 30%
       if (progress > 0.7) {

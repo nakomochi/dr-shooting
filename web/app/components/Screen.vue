@@ -240,17 +240,17 @@ onMounted(async () => {
     }
     // Offset from rifle origin: X=left/right, Y=up/down, Z=forward(negative)
     // Adjusted for scale 0.08 (barrel tip is about 0.2m forward from grip)
-    const tipOffset = new THREE.Vector3(0, 0.003, 0);
+    const tipOffset = new THREE.Vector3(0.2, 0.2, 0);
     return tipOffset.clone().applyMatrix4(rifleModel.matrixWorld);
   };
 
-  // Get target position for bullet (beyond the masks at 2.5m, so bullet passes through)
+  // Get target position for bullet (beyond the masks, so bullet passes through)
   const getTargetPosition = (): THREE.Vector3 => {
     const ndc = new THREE.Vector3(pointer.value.x, pointer.value.y, 0.5);
     ndc.unproject(three.camera);
     const direction = ndc.sub(three.camera.position).normalize();
-    // Shoot further than mask distance (2.5m) to ensure bullet can hit masks
-    return three.camera.position.clone().add(direction.multiplyScalar(5));
+    // Shoot far enough to hit distant masks (10m range)
+    return three.camera.position.clone().add(direction.multiplyScalar(10));
   };
 
   let rifle: THREE.Object3D | null = null;
