@@ -180,11 +180,12 @@ onMounted(async () => {
   const getGunTipPosition = (rifleModel: THREE.Object3D | null): THREE.Vector3 => {
     if (!rifleModel) {
       return three.camera.position.clone().add(
-        new THREE.Vector3(0.5, -0.3, -0.5).applyQuaternion(three.camera.quaternion)
+        new THREE.Vector3(0.25, -0.35, -0.4).applyQuaternion(three.camera.quaternion)
       );
     }
     // Offset from rifle origin: X=left/right, Y=up/down, Z=forward(negative)
-    const tipOffset = new THREE.Vector3(0, 0.1, -7);
+    // Adjusted for scale 0.08 (barrel tip is about 0.2m forward from grip)
+    const tipOffset = new THREE.Vector3(0, 0.003, 0);
     return tipOffset.clone().applyMatrix4(rifleModel.matrixWorld);
   };
 
@@ -319,17 +320,19 @@ onMounted(async () => {
   }
 
   // Load rifle model
+  // Position: shoulder-mounted rifle position (slightly right and down from eye level)
   try {
     const { model, dispose } = await loadRifleModel({
-      position: [0.75, -0.75, -0.5],
-      rotation: [Math.PI / 16, -Math.PI / 9 * 8.5, 0],
-      scale: 2.5,
+      position: [0.2, -0.3, 0],
+      rotation: [-Math.PI / 32, -Math.PI / 9 * 8.5, 0],
+      scale: 0.8,
       center: false,
     });
     rifle = model;
-    three.scene.add(model);
+    // Attach to camera instead of scene - gun follows player's head
+    three.camera.add(model);
     cleanups.push(() => {
-      three.scene.remove(model);
+      three.camera.remove(model);
       dispose();
     });
   } catch (error) {
@@ -541,14 +544,10 @@ onMounted(async () => {
     }
   };
 
+  // Gun is attached to camera with fixed position/rotation
+  // Adjust rotation in loadRifleModel options to align with center of view
   const aimRifle = () => {
-    if (!rifle) return;
-    const { x, y } = pointer.value;
-    const ndc = new THREE.Vector3(x, y, 0.5);
-    ndc.unproject(three.camera);
-    const dir = ndc.sub(three.camera.position).normalize();
-    const target = new THREE.Vector3().copy(rifle.position).add(dir);
-    rifle.lookAt(target);
+    // No-op: gun rotation is fixed relative to camera
   };
 
   three.onRender((time, frame) => {
