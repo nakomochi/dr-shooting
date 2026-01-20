@@ -10,6 +10,8 @@
 
         <p class="start-hint">Press "Start AR" button to begin</p>
       </div>
+
+      <button class="reload-btn" @click="reload">↻ Reload</button>
     </div>
   </div>
 </template>
@@ -18,6 +20,10 @@
 import { useGamePhase } from '~/composables/gamePhase';
 
 const gamePhase = useGamePhase();
+
+const reload = () => {
+  window.location.reload();
+};
 </script>
 
 <style scoped lang="scss">
@@ -70,5 +76,28 @@ const gamePhase = useGamePhase();
   margin-top: 2rem;
   color: #888;
   font-size: 1rem;
+}
+
+.reload-btn {
+  position: absolute;
+  bottom: 2rem;
+  right: 2rem;
+  padding: 0.75rem 1.5rem;
+  font-size: 1rem;
+  color: #ccc;
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.2s;
+
+  &:hover {
+    background: rgba(255, 255, 255, 0.2);
+    color: #fff;
+  }
+
+  &:active {
+    transform: scale(0.95);
+  }
 }
 </style>
